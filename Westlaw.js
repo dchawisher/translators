@@ -1,16 +1,17 @@
 {
 	"translatorID": "fc9e5c87-2a77-450c-8a05-d48c58dbca69",
+	"translatorType": 4,
 	"label": "Westlaw",
 	"creator": "David Hawisher",
 	"target": "^.*westlaw.*",
 	"minVersion": "3.0",
-	"maxVersion": "",
+	"maxVersion": null,
 	"priority": 10,
 	"inRepository": true,
-	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2020-08-07 15:48:48"
+	"lastUpdated": "2020-08-20 08:23:10"
 }
+
 
 function detectWeb(doc, url) {
 	// Icon shows only for cases, statutes, and regulations
@@ -47,7 +48,7 @@ function doWeb(doc, url) {
 		NewItem.filingDate = NewItem.date //Need this to make a shortened bluebook citation style work 
 		let court = ZU.xpathText(doc, '//span[@id="courtline"]/text()').replace(/\.$/g, "")
 		let note = getAnnotations(doc)
-		if (note) { NewItem.notes.push({'note': note, 'tags': ['note']}) }
+		if (note) NewItem.notes.push({'note': note})
 		Object.assign(NewItem, parseCitations(citationArray))
 		NewItem.shortTitle = shortTitle(NewItem.caseName)
 		NewItem.jurisdiction = parseJurisdiction(court)
@@ -74,56 +75,188 @@ function doWeb(doc, url) {
 			if (!codeNum) {
 				codeNum = []
 			}
+			let nSection = section
 			if (section) {
-				section = section.replace("-", "\\-")
+				nSection = section.replace("-", "\\-")
 			}
 			if (abbrevMap[code]) {
 				code = abbrevMap[code]
 			}
+			NewItem.title = document.getElementsByClassName('co_title')[0].innerText
 			NewItem.codeNumber = codeNum
-			NewItem.section = section
+			NewItem.section = nSection
 			NewItem.code = code
+			NewItem.title = code ? code + " " + NewItem.title : NewItem.title
+			NewItem.title = codeNum ? codeNum + " " + NewItem.title : NewItem.title
 		} catch (err) {
+			console.warn(err.message)
 			NewItem.title = cite
 		}
+		let note = getStatuteText(doc, NewItem.title)
+		if (note) NewItem.notes.push({'note': note})
 		NewItem.publicationDate = effectiveDate
-		NewItem.url = "https://1.next.westlaw.com/Search/Results.html?query=find:" + NewItem.codeNum + "%20" + NewItem.code + "%20" + NewItem.section + "#autoLogin"
+		let metadata = JSON.parse(document.getElementById('co_document').nextElementSibling.value.replace(/\\/g, ""))
+		let guid = metadata['docGuid']
+		NewItem.url = `westlaw.com/Document/${guid}/View/FullText.html?transitionType=Default&contextData=(sc.Default)&VR=3.0&RS=cblt1.0`
 		NewItem.complete()
 	}
 }
 
+function getStatuteText(doc, title) {
+	let statute = document.getElementsByClassName("co_contentBlock co_briefItState co_body")[0]
+	let sParagraphs = statute.getElementsByClassName("co_paragraphText")
+	let note = title
+	let indentMod = 0 //left indent is smaller than hanging indent at the same number
+	for (p of sParagraphs) {
+		console.log(p)
+		let indent = 0
+		//if (p.className.match(/(?:co_indentHanging)([1-9])/)) indent++
+		try {
+			indent+= p.className.match(/(?:co_indentLeft)([1-9])/)[1]
+		} catch(err) {
+			console.log(err.message)
+		}
+
+		indent = Math.min(indent, 5) * 20
+		indent = indent ? ` style='padding-left: ${indent}px'` : ''
+		note += `<p${indent}>${p.innerText}</p>` + '\n'
+	}
+	if (note.length > title.length) return note
+}
+
 //Get case highlighting and associated page numbers and use as note for Zotero item. This is really useful.
 function getAnnotations(doc) {
+	let highlights = Array.prototype.slice.call(doc.getElementsByClassName('co_hl'))
+	if (highlights.length === 0) return
+	let commentsArray = Array.prototype.slice.call(doc.getElementsByClassName('co_noteHolder'))
+	let hTemp = []
+	let comments = {}
+	let i = -1
+	let annotationRegex = /(?:co_noteHolder_|co_selection_)([0-9])+/
+	
+	highlights.forEach((item, index) => { //we want an array of objects, each representing an entire highlighted passage
+		if (item.id) { //the first span of each highlight has an ID and the rest do not, so we use that to check whether the item is part of a previous highlight
+			i++
+			hTemp.push({})
+			hTemp[i]['id'] = item.id.match(annotationRegex)[1] || id
+			hTemp[i]['color'] = hTemp[i]['color'] || item.className.match(/(yellow|green|blue|pink|orange|purple|black)/)[0]
+			hTemp[i]['page'] = getPageNumber(item, doc)
+			hTemp[i]['text'] = ""
+		}
+		hTemp[i]['text'] = hTemp[i]['text'] + item.innerText + ""	
+	})
+	highlights = hTemp
+	console.log(highlights)
+	
+	if (commentsArray.length > 0) { //now we want an object of the comments, since comments will be associated with highlights.
+		commentsArray.forEach((item, index) => {
+			comments[item.id.match(annotationRegex)[1]] = item.getElementsByClassName('co_viewNoteText')[0].innerText
+		})
+	}
+	console.log(comments)
+	
+	let note = ''
+	
+	for (s of noteSections) {//TODO make this more resilient to improper colors in the future
+		let sNote = '' 
+		for (h of highlights) {
+			if (s[1].indexOf(h.color) > -1) {
+				if (comments[h.id]) {
+					sNote += `<p>${comments[h.id]}:</p>` + "\n"
+				}
+				sNote += `<p><blockquote>${h.text} [${h.page}]</blockquote></p>` + "\n"
+			}
+		}
+		if ((s[0] === "Other" | s[0] === "Reasoning") & note.length === 0) {
+			note = sNote
+		} else if (sNote.length > 0) {
+			note += `<h4>${s[0]}</h4>` + "\n" + sNote
+		}
+	}
+
+	return note
+}
+//Helper array for structuring output note. Category name (in preferred order), 
+//followed by an array of color names, choosing from yellow, green, blue, pink, orange, purple, black.
+const noteSections = [
+	["Rule", ["green"]],
+	["Reasoning", ["green", "yellow"]],
+	["Facts", ["blue"]], //Have to do it this way to ensure that the holding goes with the reasoning in support of it
+	["Concerning Language", ["pink"]],
+	["Other", ["orange", "purple", "black"]] //Remaining colors. 
+]
+
+/* function getAnnotations(doc) {
 	let annotations = Array.prototype.slice.call(doc.getElementsByClassName('co_hl'))
+	let comments = Array.prototype.slice.call(doc.getElementsByClassName('co_noteContainer'))
 	let arr = []
-	let text = ''
+	let noteText = ''
 	let page = ''
+	let commentsObj = {} //put comment text in an object corresponding to the annotationid, which is how we will link each note's text to its comment
+	if (comments.length > 0) {
+		comments.forEach((item, index) => {
+			console.log(item)
+			commentsObj[item.getAttribute('data-annotationid')] = item.children[0].children[2].innerText
+		})
+	}
+	console.log(commentsObj)
 	if (annotations.length > 0) {
 		annotations.forEach((item, index) => {
 			let id = item.getAttribute('data-annotationid')
 			let next = annotations[index + 1] || false
 			let idNext = ''
 			idNext = (next ? annotations[index + 1].getAttribute('data-annotationid') : '')
-			text += item.innerText
+			noteText += item.innerText
 			page = page || getPageNumber(item, doc)
 			if (id !== idNext) {
-				arr.push({ 'id': id, 'text': text.trim(), 'page': page })
+				arr.push({ 'id': id, 'text': noteText.trim(), 'page': page })
+				console.log(id)
 				page = ''
-		text = ''
+				noteText = ''
 			}
 		})
 	}
 	if (arr.length > 0) {
 		let note = ''
 		for (b of arr) {
+			if (commentsObj[b.id]) {
+				note += `<p>${commentsObj[b.id]}</p>`
+			}
 			note += `<p><blockquote>${b.text} [${b.page}]</blockquote></p>`
 		}
 		return note
 	}
-}
+} */
 
 function getPageNumber(ele, doc) { //for now this is only used for annotations. We get the page number of each annotation by iterating through the page numbers in the document until we find one that occurs after the start of our annotation.
 	let page = ""
+	try { //Check if ele is in a footnote
+		if (document.getElementById('co_footnoteSection').contains(ele)) {
+			let i = 0
+			while (ele.className !== 'co_footnoteBody' & i < 6) {
+				ele = ele.parentNode
+				i++
+			}
+			if (ele.className !== 'co_footnoteBody') return 'footnote'
+			ele = ele.previousSibling
+			if (ele.className !== 'co_footnoteNumber') return 'footnote'
+			console.log(ele.innerText)
+			page = "n." + ele.innerText
+			console.log(ele.firstChild)
+			try {
+				let value = JSON.parse(ele.firstChild.value.replace(/\\/g, ""))
+				console.log(value)
+				console.log(value["pageNumber"])
+				page = "*" + value["pageNumber"] + " " + page
+				return page
+			} catch(err) {
+				console.warn(err.message)
+				return "n." + ele.innerText
+			}
+		}
+	} catch(err) {
+		console.warn(err.message)
+	}
 	let pageNumbers = doc.getElementsByClassName('co_starPage')
 	let comparison = 0
 	for (pageNumber of pageNumbers) {
@@ -232,9 +365,14 @@ var trimPattern = /(^( )|( |,|Inc.|Co.|LLC|LLLP|LLP)$)/mgi
 
 //Helper array for using the preferred reporter.
 var preferredReporters = [
+	['Fed.Appx.', true],
+	['U.S.', true],
 	['NCBC', false], 
 	['WL', false]
 ]
+
+
+
 
 //Codes and Statutes
 var codeRex = /(C\.F\.R\.|NCAC|U\.S\.C\.A\.|N\.C\.G\.S\.A\.|West\'s\sAnn\.Cal\.[a-zA-Z\.]+\sCode)/
