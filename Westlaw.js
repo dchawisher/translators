@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-22 13:51:52"
+	"lastUpdated": "2026-06-22 14:37:02"
 }
 
 
@@ -39,6 +39,17 @@
 //Helper patterns for Title and Case Name processing
 var govPattern = /((city|county|cty.|state) of|(^state)|(^United States$)|(^U.S.$))/i;
 var trimPattern = /(^( )|( |,|Inc.|Co.|LLC|LLLP|LLP)$)/mgi;
+var stockHighlightColors = {
+	yellow: "#ffd400",
+	green: "#5fb236",
+	blue: "#2ea8e5",
+	orange: "#f19837",
+	red: "#ff6666",
+	pink: "#e56eee",
+	purple: "#a28ae5",
+	gray: "#aaaaaa",
+	black: "#aaaaaa"
+};
 
 //Helper array for using the preferred reporter.
 var preferredReporters = [
@@ -878,7 +889,7 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	}
 	if (tag === "SPAN" && node.classList.contains("co_hl") && !node.classList.contains("co_hlActivator")) {
 		cleanNode = doc.createElement("span");
-		cleanNode.className = "highlight " + (wlHighlightColor(node) || "yellow");
+		cleanNode.setAttribute("style", "background-color: " + wlHighlightColor(node));
 	}
 	else if (tag === "DIV" && node.className.includes("co_paragraphText")) {
 		cleanNode = doc.createElement("p");
@@ -1623,7 +1634,8 @@ function wlEscape(text) {
 
 function wlHighlightColor(node) {
 	let match = node.className.match(/\b(yellow|green|blue|pink|orange|purple|black)\b/);
-	return match ? match[1] : "";
+	let color = match ? match[1] : "yellow";
+	return stockHighlightColors[color] || stockHighlightColors.yellow;
 }
 
 function wlHasMeaningfulHighlight(node) {
