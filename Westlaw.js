@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-22 14:37:02"
+	"lastUpdated": "2026-06-22 16:41:26"
 }
 
 
@@ -282,6 +282,7 @@ function doWeb(doc, url) {
 		item.callNumber = cite || undefined;
 	}
 
+	wlAttachSnapshot(item, doc, url, metadata, profile);
 	item.complete();
 }
 
@@ -604,6 +605,198 @@ function wlBuildCodeNote(doc, title, root, effectiveDate) {
 	return wlNoteHTML(wrapper);
 }
 
+function wlAttachSnapshot(item, doc, url, metadata, profile) {
+	let snapshotContent = wlBuildSnapshotHTML(doc, item, url, metadata, profile);
+	if (!snapshotContent) return;
+	item.attachments.push({
+		title: "Westlaw Snapshot",
+		url: item.url || westlawURL(doc, url, metadata),
+		mimeType: "text/html",
+		snapshotContent
+	});
+}
+
+function wlBuildSnapshotHTML(doc, item, url, metadata, profile) {
+	let root = wlGetDocumentRoot(doc);
+	if (!root) return "";
+
+	let snapshotDoc = doc.implementation.createHTMLDocument(item.title || wlGetTitle(doc, metadata) || "Westlaw Document");
+	snapshotDoc.documentElement.setAttribute("lang", "en");
+	wlAppendSnapshotHead(snapshotDoc, item, url, metadata);
+	let body = snapshotDoc.body;
+	body.className = "westlaw-snapshot";
+
+	let main = snapshotDoc.createElement("main");
+	main.className = "document";
+	body.appendChild(main);
+	wlAppendSnapshotHeader(snapshotDoc, main, item, doc, url, metadata);
+
+	if (profile.kind === "case") {
+		wlAppendCaseSnapshot(doc, snapshotDoc, main, item);
+	}
+	else {
+		wlAppendGenericSnapshot(doc, snapshotDoc, main, root);
+	}
+
+	return wlClean(main.textContent) ? "<!DOCTYPE html>\n" + snapshotDoc.documentElement.outerHTML : "";
+}
+
+function wlAppendSnapshotHead(snapshotDoc, item, url, metadata) {
+	let head = snapshotDoc.head;
+	let meta = snapshotDoc.createElement("meta");
+	meta.setAttribute("charset", "utf-8");
+	head.appendChild(meta);
+	let title = snapshotDoc.createElement("title");
+	title.textContent = item.title || "Westlaw Snapshot";
+	head.appendChild(title);
+	let canonical = snapshotDoc.createElement("meta");
+	canonical.setAttribute("name", "juris-lit-source-url");
+	canonical.setAttribute("content", item.url || westlawURL(snapshotDoc, url, metadata));
+	head.appendChild(canonical);
+	let style = snapshotDoc.createElement("style");
+	style.textContent = wlSnapshotCSS();
+	head.appendChild(style);
+}
+
+function wlAppendSnapshotHeader(snapshotDoc, wrapper, item, sourceDoc, url, metadata) {
+	let header = snapshotDoc.createElement("header");
+	header.className = "documentHeader";
+	let title = snapshotDoc.createElement("h1");
+	title.textContent = item.title || wlGetTitle(sourceDoc, metadata) || "Westlaw Document";
+	header.appendChild(title);
+
+	let cite = wlGetCite(sourceDoc, metadata) || item.callNumber;
+	if (cite) {
+		let citation = snapshotDoc.createElement("p");
+		citation.className = "citation";
+		citation.textContent = cite;
+		header.appendChild(citation);
+	}
+
+	let sourceURL = item.url || westlawURL(sourceDoc, url, metadata);
+	if (sourceURL) {
+		let source = snapshotDoc.createElement("p");
+		source.className = "source";
+		source.appendChild(snapshotDoc.createTextNode("Source: "));
+		let link = snapshotDoc.createElement("a");
+		link.href = sourceURL;
+		link.textContent = sourceURL;
+		source.appendChild(link);
+		header.appendChild(source);
+	}
+	wrapper.appendChild(header);
+}
+
+function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
+	let selectedCitation = item.volume && item.reporter && item.firstPage
+		? item.volume + " " + item.reporter + " " + item.firstPage
+		: item.callNumber || "";
+	let opinions = wlCaseOpinions(doc);
+	for (let i = 0; i < opinions.length; i++) {
+		let opinionData = opinions[i];
+		let section = snapshotDoc.createElement("section");
+		section.className = "opinion " + wlOpinionSnapshotClass(opinionData, i);
+		let heading = snapshotDoc.createElement("h2");
+		heading.textContent = wlOpinionLabel(opinionData, i);
+		section.appendChild(heading);
+		let author = wlOpinionAuthor(opinionData.container);
+		if (author) {
+			let authorNode = snapshotDoc.createElement("p");
+			authorNode.className = "opinionAuthor";
+			authorNode.textContent = author;
+			section.appendChild(authorNode);
+		}
+		let pageIndex = wlPageMarkerIndex(doc, opinionData.container || opinionData.body, selectedCitation);
+		wlAppendSnapshotContent(doc, snapshotDoc, opinionData.body, section, {
+			pageIndex,
+			includedParagraphs: [],
+			includedFootnotes: [],
+			annotationIndex: { value: 0 }
+		});
+		if (wlClean(section.textContent)) wrapper.appendChild(section);
+	}
+}
+
+function wlAppendGenericSnapshot(doc, snapshotDoc, wrapper, root) {
+	wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, {
+		pageIndex: null,
+		includedParagraphs: [],
+		includedFootnotes: [],
+		annotationIndex: { value: 0 }
+	});
+}
+
+function wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, options) {
+	for (let node of Array.from(root.children)) {
+		if (wlShouldSkipSnapshotNode(node)) continue;
+		if (node.classList && node.classList.contains("co_paragraphText")) {
+			wlAppendSnapshotParagraph(doc, snapshotDoc, wrapper, node, options);
+			continue;
+		}
+		if (node.classList && node.classList.contains("co_headtext")) {
+			wrapper.append(...wlSanitizeNode(node, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex }));
+			continue;
+		}
+		wlAppendSnapshotContent(doc, snapshotDoc, node, wrapper, options);
+	}
+}
+
+function wlAppendSnapshotParagraph(doc, snapshotDoc, wrapper, paragraph, options) {
+	if (options.includedParagraphs.includes(paragraph)) return;
+	let sanitized = wlSanitizeNode(paragraph, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex });
+	wlEnsureLeadingPageNumber(sanitized, wlGoverningPageNumber(options.pageIndex, paragraph), snapshotDoc);
+	wrapper.append(...sanitized);
+	options.includedParagraphs.push(paragraph);
+
+	for (let footnote of wlFootnotesForNode(paragraph, doc)) {
+		if (options.includedFootnotes.includes(footnote)) continue;
+		wrapper.appendChild(wlSanitizeFootnote(footnote, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex }));
+		options.includedFootnotes.push(footnote);
+	}
+}
+
+function wlShouldSkipSnapshotNode(node) {
+	if (!node || node.nodeType !== Node.ELEMENT_NODE) return true;
+	let cls = node.className || "";
+	let id = node.id || "";
+	return wlSkipElement(node)
+		|| wlIsInsideExcludedBlock(node)
+		|| wlIsInsideFootnote(node)
+		|| wlShouldStopCodeNode(node)
+		|| /\b(?:co_search|search|sidebar|navigation|toolbar|toc|result|filter)\b/i.test(cls + " " + id);
+}
+
+function wlOpinionSnapshotClass(opinionData, index) {
+	let label = wlOpinionLabel(opinionData, index).toLowerCase();
+	if (label.includes("concurr") && label.includes("dissent")) return "concurrence dissent";
+	if (label.includes("concurr")) return "concurrence";
+	if (label.includes("dissent")) return "dissent";
+	return "majority";
+}
+
+function wlSnapshotCSS() {
+	return [
+		"html { background: #faf6ee; }",
+		"body { margin: 0; color: #241f1a; background: #faf6ee; font-family: Georgia, 'Times New Roman', serif; font-size: 17px; line-height: 1.55; }",
+		".document { max-width: 780px; margin: 0 auto; padding: 3rem 2rem 4rem; }",
+		".documentHeader { border-bottom: 1px solid #d8cdbd; margin-bottom: 2rem; padding-bottom: 1rem; }",
+		"h1 { font-size: 1.65rem; line-height: 1.25; margin: 0 0 .75rem; }",
+		"h2 { font-size: 1.2rem; margin: 2rem 0 .75rem; }",
+		"h4 { font-size: 1rem; margin: 1.3rem 0 .45rem; text-transform: uppercase; letter-spacing: .04em; }",
+		"p { margin: .7rem 0; }",
+		".citation, .source, .opinionAuthor { color: #665b4d; font-size: .92rem; }",
+		".source a { color: inherit; text-decoration: underline; text-decoration-thickness: .06em; text-underline-offset: .12em; }",
+		".opinion { margin: 1.5rem 0; }",
+		".opinion.concurrence { background: #edf7fb; border-left: 4px solid #9dc9dd; padding: 1rem 1.25rem; }",
+		".opinion.dissent { background: #fff0ee; border-left: 4px solid #e2a199; padding: 1rem 1.25rem; }",
+		".pageNumber { color: #745c35; font-weight: 700; margin-right: .2rem; }",
+		".prefixPageNumber { color: #8a7d6c; font-size: .88em; font-weight: 400; }",
+		".footnote { color: #51483c; font-size: .9rem; margin: .25rem 0 .9rem 2rem; }",
+		".footnoteNumber { color: #745c35; font-weight: 700; }",
+		"blockquote { border-left: 3px solid #d8cdbd; margin: .8rem 0 .8rem 1.2rem; padding-left: 1rem; }"
+	].join("\n");
+}
+
 function wlAppendCodeNode(doc, wrapper, node) {
 	if (!node || node.nodeType !== Node.ELEMENT_NODE || wlShouldStopCodeNode(node) || wlSkipElement(node)) return;
 	if (node.classList && node.classList.contains("co_paragraphText")) {
@@ -843,6 +1036,7 @@ function wlCaseOpinions(doc) {
 	let opinions = [];
 	for (let block of Array.from(doc.querySelectorAll(".co_opinionBlock"))) {
 		for (let body of Array.from(block.querySelectorAll(".x_opinionBody")).filter(body => !body.closest(".x_opinionCipdip"))) {
+			if (body.closest(".CipDipContent, .x_opinionConcurrence, .x_opinionDissent")) continue;
 			opinions.push({
 				body: body,
 				block: block,
@@ -858,6 +1052,16 @@ function wlCaseOpinions(doc) {
 				block: block,
 				container: cipdip,
 				kind: "cipdip"
+			});
+		}
+		for (let container of Array.from(block.querySelectorAll(".x_opinionConcurrence, .x_opinionDissent"))) {
+			let body = container.querySelector(".x_opinionBody");
+			if (!body) continue;
+			opinions.push({
+				body: body,
+				block: block,
+				container: container,
+				kind: container.classList.contains("x_opinionDissent") ? "dissent" : "concurrence"
 			});
 		}
 	}
@@ -889,7 +1093,15 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	}
 	if (tag === "SPAN" && node.classList.contains("co_hl") && !node.classList.contains("co_hlActivator")) {
 		cleanNode = doc.createElement("span");
-		cleanNode.setAttribute("style", "background-color: " + wlHighlightColor(node));
+		let color = wlHighlightColor(node);
+		if (options.snapshot) {
+			let annotationID = wlSnapshotAnnotationID(options);
+			cleanNode.id = annotationID;
+			cleanNode.setAttribute("data-juris-lit-annotation", wlSnapshotAnnotationData(node, annotationID, color, options.annotationIndex.value));
+		}
+		else {
+			cleanNode.setAttribute("style", "background-color: " + color);
+		}
 	}
 	else if (tag === "DIV" && node.className.includes("co_paragraphText")) {
 		cleanNode = doc.createElement("p");
@@ -968,12 +1180,11 @@ function wlIndentStyle(node, structuralLevel) {
 	let plainIndent = /\bco_indentLeft\b/.test(cls);
 	let explicitLevel = indent ? parseInt(indent[1]) : plainIndent ? 1 : 0;
 	if (!explicitLevel && hanging) explicitLevel = parseInt(hanging[1]);
-	let level = Math.max(explicitLevel, structuralLevel || 0);
+	let westlawLevel = Math.max(explicitLevel, structuralLevel || 0);
+	let level = explicitLevel ? Math.max(explicitLevel - 1, 1) : westlawLevel;
 	if (!level) return "";
-	let padding = level * 20;
-	let style = "padding-left: " + padding + "px;";
-	if (hanging) style += " text-indent: -20px;";
-	return style;
+	// Zotero's note editor only converts legacy padding to data-indent in 40px increments.
+	return "padding-left: " + (level * 40) + "px;";
 }
 
 function wlClassTrail(node) {
@@ -991,7 +1202,7 @@ function wlEnsureLeadingPageNumber(nodes, pageNumber, doc) {
 	let firstBlock = wlFirstPageNumberBlock(nodes);
 	if (!firstBlock || wlStartsWithPageNumber(firstBlock)) return;
 	let page = doc.createElement("span");
-	page.className = "pageNumber";
+	page.className = "pageNumber prefixPageNumber";
 	page.textContent = pageNumber;
 	firstBlock.insertBefore(page, firstBlock.firstChild);
 }
@@ -1102,7 +1313,7 @@ function wlCitationKey(citation) {
 .toLowerCase();
 }
 
-function wlSanitizeFootnote(footnote, doc, pageIndex) {
+function wlSanitizeFootnote(footnote, doc, pageIndex, options) {
 	let node = doc.createElement("div");
 	node.className = "footnote";
 	let markers = [];
@@ -1119,9 +1330,9 @@ function wlSanitizeFootnote(footnote, doc, pageIndex) {
 	label.textContent = num ? "[n." + num + "] " : "[n.] ";
 	markers.push(label);
 	let body = footnote.querySelector(".co_footnoteBody") || footnote;
-	let bodyNodes = wlSanitizeNode(body, doc, pageIndex);
+	let bodyNodes = wlSanitizeNode(body, doc, pageIndex, options);
 	let inserted = wlInsertFootnoteMarkers(bodyNodes, markers);
-	wlSuperscriptFootnoteNodes(doc, bodyNodes);
+	if (!(options && options.snapshot)) wlSuperscriptFootnoteNodes(doc, bodyNodes);
 	if (!inserted) {
 		let marker = doc.createElement("sup");
 		marker.append(...markers);
@@ -1296,6 +1507,42 @@ function wlFootnoteByNumber(doc, number) {
 function wlNormalizeFootnoteNumber(number) {
 	let match = wlClean(number).match(/[A-Za-z0-9]+/);
 	return match ? match[0] : "";
+}
+
+function wlSnapshotAnnotationID(options) {
+	if (!options.annotationIndex) options.annotationIndex = { value: 0 };
+	options.annotationIndex.value++;
+	return "wl-annotation-" + options.annotationIndex.value;
+}
+
+function wlSnapshotAnnotationData(node, annotationID, color, index) {
+	let annotation = {
+		type: "highlight",
+		text: wlClean(node.textContent),
+		color: wlZoteroAnnotationColor(color),
+		isExternal: false,
+		sortIndex: String(index).padStart(7, "0"),
+		position: {
+			type: "CssSelector",
+			value: "#" + annotationID
+		}
+	};
+	return encodeURIComponent(JSON.stringify(annotation));
+}
+
+function wlZoteroAnnotationColor(color) {
+	let normalized = wlClean(color).toLowerCase();
+	let colorMap = {
+		"#ffff99": "#ffd400",
+		"#fff59d": "#ffd400",
+		"#ccffcc": "#5fb236",
+		"#ccffff": "#2ea8e5",
+		"#ffcc99": "#f19837",
+		"#ff6600": "#ff6666",
+		pink: "#e56eee",
+		lavender: "#a28ae5"
+	};
+	return colorMap[normalized] || "#ffd400";
 }
 
 function wlNodeAtOrAfter(boundary, node) {
@@ -1703,7 +1950,7 @@ function wlOpinionLabel(opinionData, index) {
 
 function wlOpinionAuthor(block) {
 	if (!block || !block.querySelector) return "";
-	return wlText(block.querySelector(".x_leadAuthorLine, .co_cipdipAuthorLineBlock, .AuthorLine"));
+	return wlText(block.querySelector(".x_leadAuthorLine, .co_cipdipAuthorLineBlock, .x_concurrenceAuthorLine, .x_dissentAuthorLine, .AuthorLine"));
 }
 
 function wlNearestCipDipHeading(node) {
