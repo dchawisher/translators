@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-22 18:10:39"
+	"lastUpdated": "2026-06-23 11:01:47"
 }
 
 
@@ -443,9 +443,9 @@ function westlawURL(itemOrDoc, url, metadata) {
 	if (itemOrDoc && itemOrDoc.querySelector) metadataObj = getMetadata(itemOrDoc);
 	let guid = wlDocumentGuid(itemOrDoc && itemOrDoc.querySelector ? itemOrDoc : null, url, metadataObj);
 	if (guid) {
-		return "https://1.next.westlaw.com/Document/" + guid + "/View/FullText.html?transitionType=Default&contextData=(sc.Default)";
+		return "https://1.next.westlaw.com/Document/" + guid + "/View/FullText.html";
 	}
-	return url || "";
+	return wlCleanWestlawURL(url || "");
 }
 
 function wlDocumentGuid(doc, url, metadata) {
@@ -457,6 +457,11 @@ function wlDocumentGuid(doc, url, metadata) {
 	let link = doc && doc.querySelector ? doc.querySelector("a[href*='/Document/'][href*='/View/FullText']") : null;
 	let linkMatch = link ? (link.href || link.getAttribute("href") || "").match(/\/Document\/([^/?#]+)/i) : null;
 	return linkMatch ? linkMatch[1] : "";
+}
+
+function wlCleanWestlawURL(url) {
+	let match = (url || "").match(/^(https?:\/\/[^?#]+\/Document\/[^/?#]+\/View\/FullText\.html)(?:[?#].*)?$/i);
+	return match ? match[1] : url;
 }
 
 function wlIsUnsupportedWestlawPage(doc, url, root, metadata) {
