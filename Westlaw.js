@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-22 16:41:26"
+	"lastUpdated": "2026-06-22 18:10:39"
 }
 
 
@@ -290,7 +290,9 @@ function wlPopulateCase(item, doc, metadata) {
 	let citations = wlGetCaseCitations(doc, metadata);
 	let selected = parseCitations(citations);
 	let courtLine = wlGetCourtLine(doc, metadata);
-	let note = wlGetCaseNote(doc, selected[2] || citations[0] || "");
+	// Snapshot attachments now carry the useful rendered document and annotations.
+	// Keep note generation code below for reference, but do not create notes by default.
+	// let note = wlGetCaseNote(doc, selected[2] || citations[0] || "");
 
 	item.caseName = wlGetTitle(doc, metadata);
 	item.title = item.caseName;
@@ -301,8 +303,8 @@ function wlPopulateCase(item, doc, metadata) {
 	item.shortTitle = shortTitle(item.caseName);
 	item.jurisdiction = parseJurisdiction(courtLine || metadata.jurisdictionText || metadata.jurisdiction || "");
 	item.court = parseCourt(courtLine || metadata.court || "");
-	if (metadata.judge && !note) item.notes.push({ note: "<p>" + wlEscape(metadata.judge) + "</p>" });
-	if (note) item.notes.push({ note: note });
+	// if (metadata.judge && !note) item.notes.push({ note: "<p>" + wlEscape(metadata.judge) + "</p>" });
+	// if (note) item.notes.push({ note: note });
 	if (wlIsUnpublished(doc)) item.publisher = "(unpub.)";
 }
 
@@ -317,8 +319,8 @@ function wlPopulateCodeItem(item, doc, metadata, kind) {
 	item.jurisdiction = wlCodeJurisdiction(parsed, metadata);
 	let effectiveDate = wlCodeEffectiveDate(doc, metadata);
 	item.publicationDate = effectiveDate;
-	let note = wlBuildCodeNote(doc, item.title, wlGetCodeBody(doc), effectiveDate);
-	if (note) item.notes.push({ note: note });
+	// let note = wlBuildCodeNote(doc, item.title, wlGetCodeBody(doc), effectiveDate);
+	// if (note) item.notes.push({ note: note });
 }
 
 function wlPopulateSessionLaw(item, doc, metadata) {
@@ -345,8 +347,8 @@ function wlPopulateFederalRegister(item, doc, metadata) {
 	item.publisher = wlFederalRegisterAgency(doc);
 	item.extra = wlFederalRegisterExtra(doc);
 	item.callNumber = cite;
-	let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
-	if (note) item.notes.push({ note: note });
+	// let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
+	// if (note) item.notes.push({ note: note });
 }
 
 function wlPopulateRestatement(item, doc, metadata) {
@@ -357,8 +359,8 @@ function wlPopulateRestatement(item, doc, metadata) {
 	item.section = parsed.section;
 	item.date = parsed.year || wlNormalizeSecondaryDate(metadata.date || metadata.publicationDate || wlText(doc.querySelector(".co_publicationLine .co_date")));
 	item.callNumber = cite;
-	let note = wlGetRestatementNote(doc, item.title);
-	if (note) item.notes.push({ note: note });
+	// let note = wlGetRestatementNote(doc, item.title);
+	// if (note) item.notes.push({ note: note });
 }
 
 function wlPopulateTreatise(item, doc, metadata) {
@@ -373,8 +375,8 @@ function wlPopulateTreatise(item, doc, metadata) {
 	item.callNumber = cite;
 	let author = wlText(doc.querySelector("#author"));
 	if (wlLooksLikePersonalCreator(author)) wlAddCreator(item, author);
-	let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
-	if (note) item.notes.push({ note: note });
+	// let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
+	// if (note) item.notes.push({ note: note });
 }
 
 function wlPopulateArticle(item, doc, metadata) {
@@ -384,8 +386,8 @@ function wlPopulateArticle(item, doc, metadata) {
 	item.pages = wlArticlePages(wlGetCite(doc, metadata));
 	item.callNumber = wlGetCite(doc, metadata);
 	wlAddCreator(item, wlText(doc.querySelector("#author")));
-	let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
-	if (note) item.notes.push({ note: note });
+	// let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
+	// if (note) item.notes.push({ note: note });
 }
 
 function wlGetDocumentProfile(doc, url) {
@@ -624,7 +626,7 @@ function wlBuildSnapshotHTML(doc, item, url, metadata, profile) {
 	snapshotDoc.documentElement.setAttribute("lang", "en");
 	wlAppendSnapshotHead(snapshotDoc, item, url, metadata);
 	let body = snapshotDoc.body;
-	body.className = "westlaw-snapshot";
+	body.className = "westlaw-snapshot juris-lit-semantic-snapshot";
 
 	let main = snapshotDoc.createElement("main");
 	main.className = "document";
@@ -633,6 +635,9 @@ function wlBuildSnapshotHTML(doc, item, url, metadata, profile) {
 
 	if (profile.kind === "case") {
 		wlAppendCaseSnapshot(doc, snapshotDoc, main, item);
+	}
+	else if (profile.kind === "restatement") {
+		wlAppendRestatementSnapshot(doc, snapshotDoc, main, root);
 	}
 	else {
 		wlAppendGenericSnapshot(doc, snapshotDoc, main, root);
@@ -692,6 +697,7 @@ function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 		? item.volume + " " + item.reporter + " " + item.firstPage
 		: item.callNumber || "";
 	let opinions = wlCaseOpinions(doc);
+	let annotationIndex = { value: 0 };
 	for (let i = 0; i < opinions.length; i++) {
 		let opinionData = opinions[i];
 		let section = snapshotDoc.createElement("section");
@@ -703,6 +709,7 @@ function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 		if (author) {
 			let authorNode = snapshotDoc.createElement("p");
 			authorNode.className = "opinionAuthor";
+			authorNode.setAttribute("data-juris-lit-condensed-head", "opinion-author");
 			authorNode.textContent = author;
 			section.appendChild(authorNode);
 		}
@@ -711,7 +718,7 @@ function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 			pageIndex,
 			includedParagraphs: [],
 			includedFootnotes: [],
-			annotationIndex: { value: 0 }
+			annotationIndex
 		});
 		if (wlClean(section.textContent)) wrapper.appendChild(section);
 	}
@@ -723,6 +730,21 @@ function wlAppendGenericSnapshot(doc, snapshotDoc, wrapper, root) {
 		includedParagraphs: [],
 		includedFootnotes: [],
 		annotationIndex: { value: 0 }
+	});
+}
+
+function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root) {
+	let section = wlGetSectionRoot(doc) || root;
+	let boundary = wlRestatementBoundaryNode(section);
+	let ruleBoundary = wlRestatementCommentNode(section) || boundary;
+	let rule = wlRestatementRuleRoot(section, ruleBoundary);
+	let ruleParagraphs = rule ? wlRestatementRuleParagraphs(rule, ruleBoundary) : [];
+	wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, {
+		pageIndex: null,
+		includedParagraphs: [],
+		includedFootnotes: [],
+		annotationIndex: { value: 0 },
+		condensedHeadParagraphs: ruleParagraphs
 	});
 }
 
@@ -745,6 +767,13 @@ function wlAppendSnapshotParagraph(doc, snapshotDoc, wrapper, paragraph, options
 	if (options.includedParagraphs.includes(paragraph)) return;
 	let sanitized = wlSanitizeNode(paragraph, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex });
 	wlEnsureLeadingPageNumber(sanitized, wlGoverningPageNumber(options.pageIndex, paragraph), snapshotDoc);
+	if (options.condensedHeadParagraphs && options.condensedHeadParagraphs.includes(paragraph)) {
+		for (let node of sanitized) {
+			if (node.nodeType === Node.ELEMENT_NODE && node.tagName === "P") {
+				node.setAttribute("data-juris-lit-condensed-head", "restatement-rule");
+			}
+		}
+	}
 	wrapper.append(...sanitized);
 	options.includedParagraphs.push(paragraph);
 
@@ -767,10 +796,11 @@ function wlShouldSkipSnapshotNode(node) {
 }
 
 function wlOpinionSnapshotClass(opinionData, index) {
-	let label = wlOpinionLabel(opinionData, index).toLowerCase();
-	if (label.includes("concurr") && label.includes("dissent")) return "concurrence dissent";
-	if (label.includes("concurr")) return "concurrence";
-	if (label.includes("dissent")) return "dissent";
+	let kind = wlOpinionKind(opinionData, index);
+	if (kind === "concurrence-dissent") return "concurrence dissent";
+	if (kind === "concurrence") return "concurrence";
+	if (kind === "dissent") return "dissent";
+	if (kind === "separate") return "separate";
 	return "majority";
 }
 
@@ -789,6 +819,7 @@ function wlSnapshotCSS() {
 		".opinion { margin: 1.5rem 0; }",
 		".opinion.concurrence { background: #edf7fb; border-left: 4px solid #9dc9dd; padding: 1rem 1.25rem; }",
 		".opinion.dissent { background: #fff0ee; border-left: 4px solid #e2a199; padding: 1rem 1.25rem; }",
+		".opinion.separate { background: #f2f2f2; border-left: 4px solid #c9c9c9; padding: 1rem 1.25rem; }",
 		".pageNumber { color: #745c35; font-weight: 700; margin-right: .2rem; }",
 		".prefixPageNumber { color: #8a7d6c; font-size: .88em; font-weight: 400; }",
 		".footnote { color: #51483c; font-size: .9rem; margin: .25rem 0 .9rem 2rem; }",
@@ -1533,14 +1564,30 @@ function wlSnapshotAnnotationData(node, annotationID, color, index) {
 function wlZoteroAnnotationColor(color) {
 	let normalized = wlClean(color).toLowerCase();
 	let colorMap = {
+		"#ffd400": "#ffd400",
+		"#5fb236": "#5fb236",
+		"#2ea8e5": "#2ea8e5",
+		"#f19837": "#f19837",
+		"#ff6666": "#ff6666",
+		"#e56eee": "#e56eee",
+		"#a28ae5": "#a28ae5",
+		"#aaaaaa": "#aaaaaa",
 		"#ffff99": "#ffd400",
 		"#fff59d": "#ffd400",
 		"#ccffcc": "#5fb236",
 		"#ccffff": "#2ea8e5",
 		"#ffcc99": "#f19837",
 		"#ff6600": "#ff6666",
+		yellow: "#ffd400",
+		green: "#5fb236",
+		blue: "#2ea8e5",
+		orange: "#f19837",
+		red: "#ff6666",
 		pink: "#e56eee",
-		lavender: "#a28ae5"
+		purple: "#a28ae5",
+		lavender: "#a28ae5",
+		gray: "#aaaaaa",
+		black: "#aaaaaa"
 	};
 	return colorMap[normalized] || "#ffd400";
 }
@@ -1880,7 +1927,7 @@ function wlEscape(text) {
 }
 
 function wlHighlightColor(node) {
-	let match = node.className.match(/\b(yellow|green|blue|pink|orange|purple|black)\b/);
+	let match = node.className.match(/\b(yellow|green|blue|pink|orange|red|purple|gray|black)\b/);
 	let color = match ? match[1] : "yellow";
 	return stockHighlightColors[color] || stockHighlightColors.yellow;
 }
@@ -1935,17 +1982,34 @@ function wlIsUnpublished(doc) {
 }
 
 function wlOpinionLabel(opinionData, index) {
+	let kind = wlOpinionKind(opinionData, index);
+	if (kind === "concurrence-dissent") return "Concurring in Part / Dissenting in Part";
+	if (kind === "concurrence") return "Concurrence";
+	if (kind === "dissent") return "Dissent";
+	if (kind === "separate") return "Separate Opinion";
+	return "Majority Opinion";
+}
+
+function wlOpinionKind(opinionData, index) {
+	if (opinionData.kind === "majority") {
+		return index === 0 ? "majority" : "separate";
+	}
+	if (opinionData.kind === "concurrence" || opinionData.kind === "dissent") {
+		return opinionData.kind;
+	}
+
 	let labelText = [
 		opinionData.kind,
 		opinionData.container ? opinionData.container.className : "",
 		wlOpinionAuthor(opinionData.container),
 		wlNearestCipDipHeading(opinionData.container)
 	].join(" ");
-	if (/concurr/i.test(labelText) && /dissent/i.test(labelText)) return "Concurring in Part / Dissenting in Part";
-	if (/concurr/i.test(labelText)) return "Concurrence";
-	if (/dissent/i.test(labelText)) return "Dissent";
-	if (opinionData.kind === "cipdip") return "Separate Opinion";
-	return index === 0 ? "Majority Opinion" : "Opinion";
+	if (/\bconcurr(?:ence|ing)?\b/i.test(labelText) && /\bdissent(?:ing)?\b/i.test(labelText)) {
+		return "concurrence-dissent";
+	}
+	if (/\bconcurr(?:ence|ing)?\b/i.test(labelText)) return "concurrence";
+	if (/\bdissent(?:ing)?\b/i.test(labelText)) return "dissent";
+	return "separate";
 }
 
 function wlOpinionAuthor(block) {
