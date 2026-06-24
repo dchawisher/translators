@@ -305,7 +305,8 @@ function wlPopulateCase(item, doc, metadata) {
 	item.court = parseCourt(courtLine || metadata.court || "");
 	// if (metadata.judge && !note) item.notes.push({ note: "<p>" + wlEscape(metadata.judge) + "</p>" });
 	// if (note) item.notes.push({ note: note });
-	if (wlIsUnpublished(doc)) item.publisher = "(unpub.)";
+	if (wlIsUnpublished(doc)) item.setExtra("Unpublished", "true");
+	if (wlHasNegativeHistory(doc)) item.setExtra("hasNegativeHistory", "true");
 }
 
 function wlPopulateCodeItem(item, doc, metadata, kind) {
@@ -1984,6 +1985,23 @@ function wlIsRestatementLike(cite, title, subContentType) {
 function wlIsUnpublished(doc) {
 	let caveat = wlText(doc.querySelector(".co_caveatBlock")).toLowerCase();
 	return caveat.includes("unpublished");
+}
+
+function wlHasNegativeHistory(doc) {
+	let flagNodes = doc.querySelectorAll(".co_inlineKeyCiteFlag, .co_keyIcon, [alt], [title], [aria-label]");
+	return Array.from(flagNodes).some((node) => {
+		let text = [
+			node.className,
+			node.getAttribute("alt"),
+			node.getAttribute("title"),
+			node.getAttribute("aria-label"),
+			node.getAttribute("src"),
+			wlText(node)
+		].filter(Boolean).join(" ").toLowerCase();
+		return /\bred\s*flag\b/.test(text)
+			|| /\bnegative (history|treatment)\b/.test(text)
+			|| /\bsevere negative\b/.test(text);
+	});
 }
 
 function wlOpinionLabel(opinionData, index) {
