@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-23 11:01:47"
+	"lastUpdated": "2026-06-23 23:17:08"
 }
 
 
@@ -37,7 +37,7 @@
 */
 
 //Helper patterns for Title and Case Name processing
-var govPattern = /((city|county|cty.|state) of|(^state)|(^United States$)|(^U.S.$))/i;
+var govPattern = /\b(?:city|county|cty\.) of\b|^state\b|^United States$|^U\.S\.$/i;
 var trimPattern = /(^( )|( |,|Inc.|Co.|LLC|LLLP|LLP)$)/mgi;
 var stockHighlightColors = {
 	yellow: "#ffd400",
