@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-23 23:17:08"
+	"lastUpdated": "2026-06-29 00:26:18"
 }
 
 
@@ -274,6 +274,9 @@ function doWeb(doc, url) {
 	else if (profile.kind === "treatise") {
 		wlPopulateTreatise(item, doc, metadata);
 	}
+	else if (profile.kind === "dictionary") {
+		wlPopulateDictionaryEntry(item, doc, metadata);
+	}
 	else if (profile.kind === "article") {
 		wlPopulateArticle(item, doc, metadata);
 	}
@@ -335,19 +338,16 @@ function wlPopulateSessionLaw(item, doc, metadata) {
 function wlPopulateFederalRegister(item, doc, metadata) {
 	let cite = wlGetCite(doc, metadata);
 	let parsed = wlParseFederalRegisterCitation(cite);
-	item.title = wlGetTitle(doc, metadata);
-	item.publicationTitle = "Federal Register";
-	if (parsed.volume) item.volume = parsed.volume;
+	let title = wlGetTitle(doc, metadata);
+	item.title = title;
+	item.nameOfAct = title;
+	item.code = "Federal Register";
+	if (parsed.volume) item.codeNumber = parsed.volume;
 	if (parsed.pages) item.pages = parsed.pages;
-	if (parsed.wlYear && parsed.wlNumber) {
-		item.archive = "WL";
-		item.yearAsVolume = parsed.wlYear;
-		item.archiveLocation = parsed.wlNumber;
-	}
-	item.date = wlFederalRegisterDate(doc, metadata);
+	item.dateEnacted = wlFederalRegisterDate(doc, metadata);
+	item.jurisdiction = "us";
 	item.publisher = wlFederalRegisterAgency(doc);
 	item.extra = wlFederalRegisterExtra(doc);
-	item.callNumber = cite;
 	// let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
 	// if (note) item.notes.push({ note: note });
 }
@@ -368,7 +368,12 @@ function wlPopulateTreatise(item, doc, metadata) {
 	let cite = wlGetCite(doc, metadata);
 	let parsed = wlParseTreatiseCitation(cite, wlGetTitle(doc, metadata));
 	item.title = wlSectionTitle(wlGetTitle(doc, metadata), parsed.section);
-	item.bookTitle = wlTreatiseBookTitle(doc, metadata);
+	let bookTitle = wlTreatiseBookTitle(doc, metadata);
+	let citationTitle = wlTreatiseBookTitleFromCitation(cite);
+	if (wlShouldPreferTreatiseCitationTitle(bookTitle, citationTitle)) {
+		bookTitle = citationTitle;
+	}
+	item.bookTitle = wlCommentaryBookTitle(bookTitle, parsed.volume);
 	item.section = parsed.section || cite;
 	item.volume = parsed.volume;
 	item.edition = parsed.edition;
@@ -378,6 +383,16 @@ function wlPopulateTreatise(item, doc, metadata) {
 	if (wlLooksLikePersonalCreator(author)) wlAddCreator(item, author);
 	// let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
 	// if (note) item.notes.push({ note: note });
+}
+
+function wlPopulateDictionaryEntry(item, doc, metadata) {
+	let cite = wlGetCite(doc, metadata);
+	let parsed = wlParseDictionaryCitation(cite);
+	item.title = wlGetTitle(doc, metadata);
+	item.dictionaryTitle = parsed.title || wlClean(cite);
+	item.edition = parsed.edition;
+	item.date = parsed.year;
+	item.callNumber = cite;
 }
 
 function wlPopulateArticle(item, doc, metadata) {
@@ -410,7 +425,7 @@ function wlGetDocumentProfile(doc, url) {
 		return { kind: "sessionLaw", itemType: "statute" };
 	}
 	if (title.includes("pending/proposed regulations") || rootClass.includes("co_federalRegister") || /\bFR\b/.test(cite)) {
-		return { kind: "federalRegister", itemType: "journalArticle" };
+		return { kind: "federalRegister", itemType: "gazette" };
 	}
 	if (title.includes("| statutes |") || rootClass.includes("co_codesStatutes") || contentType === "statutes") {
 		return { kind: "statute", itemType: "statute" };
@@ -419,10 +434,11 @@ function wlGetDocumentProfile(doc, url) {
 		return { kind: "regulation", itemType: "regulation" };
 	}
 	if (wlIsRestatementLike(cite, title, subContentType)) {
-		return { kind: "restatement", itemType: "bookSection" };
+		return { kind: "restatement", itemType: "legalCommentary" };
 	}
 	if (title.includes("| secondary sources |") || rootClass.includes("co_commentary")) {
-		if (cite.includes("§")) return { kind: "treatise", itemType: "bookSection" };
+		if (wlIsDictionaryLike(cite, title, subContentType)) return { kind: "dictionary", itemType: "dictionaryEntry" };
+		if (cite.includes("§")) return { kind: "treatise", itemType: "legalCommentary" };
 		return { kind: "article", itemType: "journalArticle" };
 	}
 	return { kind: "document", itemType: "document" };
@@ -742,6 +758,7 @@ function wlAppendGenericSnapshot(doc, snapshotDoc, wrapper, root) {
 function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root) {
 	let section = wlGetSectionRoot(doc) || root;
 	let boundary = wlRestatementBoundaryNode(section);
+	let caseCitationsBoundary = wlRestatementCaseCitationsNode(section);
 	let ruleBoundary = wlRestatementCommentNode(section) || boundary;
 	let rule = wlRestatementRuleRoot(section, ruleBoundary);
 	let ruleParagraphs = rule ? wlRestatementRuleParagraphs(rule, ruleBoundary) : [];
@@ -750,18 +767,24 @@ function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root) {
 		includedParagraphs: [],
 		includedFootnotes: [],
 		annotationIndex: { value: 0 },
-		condensedHeadParagraphs: ruleParagraphs
+		condensedHeadParagraphs: ruleParagraphs,
+		boundaryNode: caseCitationsBoundary
 	});
 }
 
 function wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, options) {
 	for (let node of Array.from(root.children)) {
+		if (options.boundaryNode && wlNodeAtOrAfter(options.boundaryNode, node)) continue;
 		if (wlShouldSkipSnapshotNode(node)) continue;
 		if (node.classList && node.classList.contains("co_paragraphText")) {
 			wlAppendSnapshotParagraph(doc, snapshotDoc, wrapper, node, options);
 			continue;
 		}
 		if (node.classList && node.classList.contains("co_headtext")) {
+			wrapper.append(...wlSanitizeNode(node, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex }));
+			continue;
+		}
+		if (node.tagName === "UL" || node.tagName === "OL") {
 			wrapper.append(...wlSanitizeNode(node, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex }));
 			continue;
 		}
@@ -1605,6 +1628,19 @@ function wlNodeAtOrAfter(boundary, node) {
 function wlParseCodeCitation(cite) {
 	let result = { code: "", codeNumber: "", section: "", titlePrefix: "" };
 	let clean = wlClean(cite).replace(/\u00a0/g, " ");
+	let rulePatterns = [
+		[/^NC\s+ST\s+RCP\s+§?\s*1A-1,\s+Rule\s+([0-9A-Za-z.:-]+)/i, "N.C.R. Civ. P."],
+		[/^NC\s+ST\s+EV\s+§?\s*8C-1,\s+Rule\s+([0-9A-Za-z.:-]+)/i, "N.C.R. Evid."],
+		[/^NC\s+R\s+SUPER\s+AND\s+DIST\s+CTS\s+Rule\s+([0-9A-Za-z.:-]+)/i, "N.C. Gen. R. Prac."],
+		[/^NC\s+R\s+RAP\s+App\.?\s+R\.?\s+([0-9A-Za-z.:-]+)/i, "N.C. R. App. P."]
+	];
+	for (let entry of rulePatterns) {
+		let match = clean.match(entry[0]);
+		if (!match) continue;
+		result.code = entry[1];
+		result.section = "r. " + match[1];
+		return result;
+	}
 	let patterns = [
 		[/^(\d+)\s+C\.F\.R\.\s+§?\s*([0-9A-Za-z.:\-–]+)/i, "C.F.R."],
 		[/^(\d+)\s+NCAC\s+([0-9A-Za-z.:\-–]+)/i, "N.C. Admin. Code"],
@@ -1655,7 +1691,11 @@ function wlCodeEffectiveDate(doc, metadata) {
 
 function wlCodeJurisdiction(parsed, metadata) {
 	if (parsed.code === "U.S.C." || parsed.code === "C.F.R.") return "us";
-	if (parsed.code === "N.C.G.S." || parsed.code === "N.C. Admin. Code") return "us:nc";
+	if (parsed.code === "N.C.G.S."
+		|| parsed.code === "N.C. Admin. Code"
+		|| /^N\.C\./.test(parsed.code)) {
+		return "us:nc";
+	}
 	let text = metadata.jurisdictionText || metadata.jurisdiction || "";
 	let stateMatch = wlClean(text).match(staterex);
 	return stateMatch ? stateMap[stateMatch[1]] : undefined;
@@ -1683,6 +1723,18 @@ function wlParseTreatiseCitation(cite, title) {
 	let editionMatch = clean.match(/\(([^)]*(?:ed\.|supp\.|rev\.)[^)]*)\)/i);
 	if (editionMatch) result.edition = wlClean(editionMatch[1]);
 	if (!wlLooksLikeDate(result.date)) result.date = "";
+	return result;
+}
+
+function wlParseDictionaryCitation(cite) {
+	let clean = wlClean(cite);
+	let result = { title: clean, edition: "", year: "" };
+	let match = clean.match(/^(.*?)\s+\(([^)]*?)(?:\s+(\d{4}))?\)$/);
+	if (!match) return result;
+	result.title = wlClean(match[1]);
+	let parenthetical = wlClean(match[2]);
+	result.year = match[3] || wlYearFromText(parenthetical);
+	result.edition = wlClean(parenthetical.replace(/\b\d{4}\b/g, ""));
 	return result;
 }
 
@@ -1744,6 +1796,24 @@ function wlTreatiseBookTitle(doc, metadata) {
 		|| "";
 }
 
+function wlTreatiseBookTitleFromCitation(cite) {
+	let clean = wlClean(cite);
+	let sectionMatch = clean.match(/\s+§+\s*[A-Za-z0-9.:-]+/);
+	return sectionMatch ? clean.slice(0, sectionMatch.index).trim() : "";
+}
+
+function wlShouldPreferTreatiseCitationTitle(bookTitle, citationTitle) {
+	if (!citationTitle) return false;
+	return /^(?:American Jurisprudence, Second Edition|Corpus Juris Secundum)$/i.test(wlClean(bookTitle));
+}
+
+function wlCommentaryBookTitle(title, volume) {
+	title = wlClean(title);
+	volume = wlClean(volume);
+	if (!title || !volume) return title;
+	return wlClean(title.replace(new RegExp("^" + wlEscapeRegExp(volume) + "\\s+"), ""));
+}
+
 function wlTreatiseDate(doc, metadata) {
 	return wlNormalizeSecondaryDate(
 		wlText(doc.querySelector(".co_publicationLine .co_date"))
@@ -1788,6 +1858,18 @@ function wlRestatementBoundaryNode(section) {
 	return wlFirstNodeInDocumentOrder(candidates);
 }
 
+function wlRestatementCaseCitationsNode(section) {
+	let candidates = Array.from(section.querySelectorAll("[id*='co_anchor_casenote'], .co_headtext, h2, h3"))
+		.filter((node) => {
+			let id = node.id || "";
+			let text = wlText(node);
+			return /co_anchor_casenote/i.test(id)
+				|| /^Case Citations\b/i.test(text)
+				|| /^General Case Citations\b/i.test(text);
+		});
+	return wlFirstNodeInDocumentOrder(candidates);
+}
+
 function wlFirstNodeInDocumentOrder(nodes) {
 	if (!nodes.length) return null;
 	nodes.sort((a, b) => {
@@ -1809,7 +1891,7 @@ function wlIsRestatementExcludedNode(node) {
 
 function wlParseFederalRegisterCitation(cite) {
 	let clean = wlClean(cite);
-	let match = clean.match(/^(\d+)\s+FR\s+([0-9-]+)(?:,\s+(\d{4})\s+WL\s+([0-9]+)(?:\(([^)]*)\))?)?/i);
+	let match = clean.match(/^(\d+)\s+FR\s+([0-9-]+)(?:,?\s+(\d{4})\s+WL\s+([0-9]+)(?:\(([^)]*)\))?)?/i);
 	return match
 		? {
 			volume: match[1] || "",
@@ -1822,9 +1904,13 @@ function wlParseFederalRegisterCitation(cite) {
 }
 
 function wlFederalRegisterDate(doc, metadata) {
-	let header = wlText(doc.querySelector(".co_documentHead .co_center"));
-	let dateMatch = header.match(/\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+[A-Z][a-z]+\s+\d{1,2},\s+\d{4}\b/);
-	return metadata.date || metadata.publicationDate || (dateMatch ? dateMatch[0] : "");
+	let datePattern = /\b(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+)?[A-Z][a-z]+\s+\d{1,2},\s+\d{4}\b/;
+	for (let node of Array.from(doc.querySelectorAll(".co_documentHead .co_center, #co_docHeaderCitation #date"))) {
+		let text = wlText(node);
+		let dateMatch = text.match(datePattern);
+		if (dateMatch) return dateMatch[0];
+	}
+	return metadata.date || metadata.publicationDate || "";
 }
 
 function wlFederalRegisterAgency(doc) {
@@ -1932,6 +2018,10 @@ function wlEscape(text) {
 .replace(/>/g, "&gt;");
 }
 
+function wlEscapeRegExp(text) {
+	return wlClean(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function wlHighlightColor(node) {
 	let match = node.className.match(/\b(yellow|green|blue|pink|orange|red|purple|gray|black)\b/);
 	let color = match ? match[1] : "yellow";
@@ -1979,7 +2069,12 @@ function wlIsRestatementCitationBlock(node) {
 }
 
 function wlIsRestatementLike(cite, title, subContentType) {
-	return /Restatement|Am\.\s*Jur\.|C\.J\.S\.|Corpus Juris/i.test(cite + " " + title + " " + subContentType);
+	return /Restatement/i.test(cite + " " + title + " " + subContentType);
+}
+
+function wlIsDictionaryLike(cite, title, subContentType) {
+	return /Black'?s?\s+Law\s+Dictionary/i.test(cite + " " + title + " " + subContentType)
+		|| /\bDictionary\b/i.test(subContentType);
 }
 
 function wlIsUnpublished(doc) {
