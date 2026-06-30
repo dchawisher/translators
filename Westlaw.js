@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-29 21:05:47"
+	"lastUpdated": "2026-06-30 02:13:25"
 }
 
 
@@ -836,14 +836,14 @@ function wlOpinionSnapshotClass(opinionData, index) {
 function wlSnapshotCSS() {
 	return [
 		"html { background: #faf6ee; }",
-		"body { margin: 0; color: #241f1a; background: #faf6ee; font-family: Georgia, 'Times New Roman', serif; font-size: 17px; line-height: 1.55; }",
+		"body { margin: 0; color: #241f1a; background: #faf6ee; font-family: Georgia, 'Times New Roman', serif; font-size: var(--juris-lit-note-font-size, 17px); line-height: 1.55; }",
 		".document { max-width: 780px; margin: 0 auto; padding: 3rem 2rem 4rem; }",
 		".documentHeader { border-bottom: 1px solid #d8cdbd; margin-bottom: 2rem; padding-bottom: 1rem; }",
-		"h1 { font-size: 1.65rem; line-height: 1.25; margin: 0 0 .75rem; }",
-		"h2 { font-size: 1.2rem; margin: 2rem 0 .75rem; }",
-		"h4 { font-size: 1rem; margin: 1.3rem 0 .45rem; text-transform: uppercase; letter-spacing: .04em; }",
+		"h1 { font-size: 1.65em; line-height: 1.25; margin: 0 0 .75rem; }",
+		"h2 { font-size: 1.2em; margin: 2rem 0 .75rem; }",
+		"h4 { font-size: 1em; margin: 1.3rem 0 .45rem; text-transform: uppercase; letter-spacing: .04em; }",
 		"p { margin: .7rem 0; }",
-		".citation, .source, .opinionAuthor { color: #665b4d; font-size: .92rem; }",
+		".citation, .source, .opinionAuthor { color: #665b4d; font-size: .92em; }",
 		".source a { color: inherit; text-decoration: underline; text-decoration-thickness: .06em; text-underline-offset: .12em; }",
 		".opinion { margin: 1.5rem 0; }",
 		".opinion.concurrence { background: #edf7fb; border-left: 4px solid #9dc9dd; padding: 1rem 1.25rem; }",
@@ -851,7 +851,7 @@ function wlSnapshotCSS() {
 		".opinion.separate { background: #f2f2f2; border-left: 4px solid #c9c9c9; padding: 1rem 1.25rem; }",
 		".pageNumber { color: #745c35; font-weight: 700; margin-right: .2rem; }",
 		".prefixPageNumber { color: #8a7d6c; font-size: .88em; font-weight: 400; }",
-		".footnote { color: #51483c; font-size: .9rem; margin: .25rem 0 .9rem 2rem; }",
+		".footnote { color: #51483c; font-size: .9em; margin: .25rem 0 .9rem 2rem; }",
 		".footnoteNumber { color: #745c35; font-weight: 700; }",
 		"blockquote { border-left: 3px solid #d8cdbd; margin: .8rem 0 .8rem 1.2rem; padding-left: 1rem; }"
 	].join("\n");
