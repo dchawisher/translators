@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-29 00:26:18"
+	"lastUpdated": "2026-06-29 21:05:47"
 }
 
 
@@ -1165,7 +1165,7 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	}
 	else if (tag === "DIV" && node.className.includes("co_paragraphText")) {
 		cleanNode = doc.createElement("p");
-		let indentStyle = wlIndentStyle(node);
+		let indentStyle = options.snapshot ? wlCodeParagraphStyle(node) : wlIndentStyle(node);
 		if (indentStyle) cleanNode.setAttribute("style", indentStyle);
 	}
 	else if (tag === "DIV" && node.className.includes("co_headtext")) {
@@ -1196,7 +1196,8 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	for (let child of node.childNodes) children.push(...wlSanitizeNode(child, doc, pageIndex, options));
 	if (!cleanNode) return children;
 	if (tag === "DIV" && node.className.includes("co_paragraphText") && children.some(wlIsBlockquoteElement)) {
-		return wlSplitParagraphAroundBlockquotes(doc, children, wlIndentStyle(node));
+		let indentStyle = options.snapshot ? wlCodeParagraphStyle(node) : wlIndentStyle(node);
+		return wlSplitParagraphAroundBlockquotes(doc, children, indentStyle);
 	}
 	cleanNode.append(...children);
 	return wlClean(cleanNode.textContent) || cleanNode.querySelector(".pageNumber") ? [cleanNode] : [];
@@ -1240,11 +1241,9 @@ function wlIndentStyle(node, structuralLevel) {
 	let plainIndent = /\bco_indentLeft\b/.test(cls);
 	let explicitLevel = indent ? parseInt(indent[1]) : plainIndent ? 1 : 0;
 	if (!explicitLevel && hanging) explicitLevel = parseInt(hanging[1]);
-	let westlawLevel = Math.max(explicitLevel, structuralLevel || 0);
-	let level = explicitLevel ? Math.max(explicitLevel - 1, 1) : westlawLevel;
+	let level = Math.max(explicitLevel, structuralLevel || 0);
 	if (!level) return "";
-	// Zotero's note editor only converts legacy padding to data-indent in 40px increments.
-	return "padding-left: " + (level * 40) + "px;";
+	return "padding-left: " + (level * 20) + "px;";
 }
 
 function wlClassTrail(node) {
@@ -1628,11 +1627,13 @@ function wlNodeAtOrAfter(boundary, node) {
 function wlParseCodeCitation(cite) {
 	let result = { code: "", codeNumber: "", section: "", titlePrefix: "" };
 	let clean = wlClean(cite).replace(/\u00a0/g, " ");
+	let ruleNumber = "([0-9A-Za-z.:-]+(?:\\([^)]+\\))*)";
 	let rulePatterns = [
-		[/^NC\s+ST\s+RCP\s+§?\s*1A-1,\s+Rule\s+([0-9A-Za-z.:-]+)/i, "N.C.R. Civ. P."],
-		[/^NC\s+ST\s+EV\s+§?\s*8C-1,\s+Rule\s+([0-9A-Za-z.:-]+)/i, "N.C.R. Evid."],
-		[/^NC\s+R\s+SUPER\s+AND\s+DIST\s+CTS\s+Rule\s+([0-9A-Za-z.:-]+)/i, "N.C. Gen. R. Prac."],
-		[/^NC\s+R\s+RAP\s+App\.?\s+R\.?\s+([0-9A-Za-z.:-]+)/i, "N.C. R. App. P."]
+		[new RegExp("^(?:FRCP|Fed\\.?\\s*R\\.?\\s*Civ\\.?\\s*P\\.?|Federal\\s+Rules?\\s+of\\s+Civil\\s+Procedure)(?:\\s+(?:Rule|R\\.?))?\\s+" + ruleNumber, "i"), "Fed. R. Civ. P."],
+		[new RegExp("^NC\\s+ST\\s+RCP\\s+§?\\s*1A-1,\\s+Rule\\s+" + ruleNumber, "i"), "N.C.R. Civ. P."],
+		[new RegExp("^NC\\s+ST\\s+EV\\s+§?\\s*8C-1,\\s+Rule\\s+" + ruleNumber, "i"), "N.C.R. Evid."],
+		[new RegExp("^NC\\s+R\\s+SUPER\\s+AND\\s+DIST\\s+CTS\\s+Rule\\s+" + ruleNumber, "i"), "N.C. Gen. R. Prac."],
+		[new RegExp("^NC\\s+R\\s+RAP\\s+App\\.?\\s+R\\.?\\s+" + ruleNumber, "i"), "N.C. R. App. P."]
 	];
 	for (let entry of rulePatterns) {
 		let match = clean.match(entry[0]);
@@ -1690,7 +1691,7 @@ function wlCodeEffectiveDate(doc, metadata) {
 }
 
 function wlCodeJurisdiction(parsed, metadata) {
-	if (parsed.code === "U.S.C." || parsed.code === "C.F.R.") return "us";
+	if (parsed.code === "U.S.C." || parsed.code === "C.F.R." || parsed.code === "Fed. R. Civ. P.") return "us";
 	if (parsed.code === "N.C.G.S."
 		|| parsed.code === "N.C. Admin. Code"
 		|| /^N\.C\./.test(parsed.code)) {
