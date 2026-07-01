@@ -630,124 +630,110 @@ function wlBuildCodeNote(doc, title, root, effectiveDate) {
 }
 
 function wlAttachSnapshot(item, doc, url, metadata, profile) {
-	let snapshotContent = wlBuildSnapshotHTML(doc, item, url, metadata, profile);
-	if (!snapshotContent) return;
+	let started = Date.now();
+	let semanticSnapshot = wlBuildSnapshotModel(doc, item, url, metadata, profile);
+	let modelBytes = semanticSnapshot ? JSON.stringify(semanticSnapshot).length : 0;
+	Zotero.debug("[Juris-Lit semantic snapshots] Westlaw translator semantic snapshot model built in "
+		+ (Date.now() - started) + "ms; bytes="
+		+ modelBytes);
+	if (!semanticSnapshot) return;
 	item.attachments.push({
-		title: "Westlaw Snapshot",
+		title: "Westlaw Semantic Snapshot",
 		url: item.url || westlawURL(doc, url, metadata),
 		mimeType: "text/html",
-		snapshotContent
+		semanticSnapshot,
+		jurisLitSkipFullSnapshot: true
 	});
 }
 
-function wlBuildSnapshotHTML(doc, item, url, metadata, profile) {
+function wlBuildSnapshotModel(doc, item, url, metadata, profile) {
 	let root = wlGetDocumentRoot(doc);
-	if (!root) return "";
+	if (!root) return null;
 
-	let snapshotDoc = doc.implementation.createHTMLDocument(item.title || wlGetTitle(doc, metadata) || "Westlaw Document");
-	snapshotDoc.documentElement.setAttribute("lang", "en");
-	wlAppendSnapshotHead(snapshotDoc, item, url, metadata);
-	let body = snapshotDoc.body;
-	body.className = "westlaw-snapshot juris-lit-semantic-snapshot";
-
-	let main = snapshotDoc.createElement("main");
-	main.className = "document";
-	body.appendChild(main);
-	wlAppendSnapshotHeader(snapshotDoc, main, item, doc, url, metadata);
+	let title = item.title || wlGetTitle(doc, metadata) || "Westlaw Document";
+	let sourceURL = item.url || westlawURL(doc, url, metadata);
+	let model = {
+		title: title,
+		url: sourceURL,
+		lang: "en",
+		header: wlSnapshotHeaderModel(doc, item, url, metadata, title, sourceURL)
+	};
 
 	if (profile.kind === "case") {
-		wlAppendCaseSnapshot(doc, snapshotDoc, main, item);
+		let subdocuments = wlCaseSnapshotSubdocuments(doc, item);
+		if (subdocuments.length) {
+			model.subdocuments = subdocuments;
+		}
+		else {
+			model.blocks = wlGenericSnapshotBlocks(doc, root, item, metadata);
+		}
 	}
 	else if (profile.kind === "restatement") {
-		wlAppendRestatementSnapshot(doc, snapshotDoc, main, root, item, metadata);
+		model.blocks = wlRestatementSnapshotBlocks(doc, root, item, metadata);
 	}
 	else {
-		wlAppendGenericSnapshot(doc, snapshotDoc, main, root, item, metadata);
+		model.blocks = wlGenericSnapshotBlocks(doc, root, item, metadata);
 	}
 
-	return wlClean(main.textContent) ? "<!DOCTYPE html>\n" + snapshotDoc.documentElement.outerHTML : "";
+	return wlSnapshotModelHasContent(model) ? model : null;
 }
 
-function wlAppendSnapshotHead(snapshotDoc, item, url, metadata) {
-	let head = snapshotDoc.head;
-	let meta = snapshotDoc.createElement("meta");
-	meta.setAttribute("charset", "utf-8");
-	head.appendChild(meta);
-	let title = snapshotDoc.createElement("title");
-	title.textContent = item.title || "Westlaw Snapshot";
-	head.appendChild(title);
-	let canonical = snapshotDoc.createElement("meta");
-	canonical.setAttribute("name", "juris-lit-source-url");
-	canonical.setAttribute("content", item.url || westlawURL(snapshotDoc, url, metadata));
-	head.appendChild(canonical);
-	let style = snapshotDoc.createElement("style");
-	style.textContent = wlSnapshotCSS();
-	head.appendChild(style);
-}
-
-function wlAppendSnapshotHeader(snapshotDoc, wrapper, item, sourceDoc, url, metadata) {
-	let header = snapshotDoc.createElement("header");
-	header.className = "documentHeader";
-	let title = snapshotDoc.createElement("h1");
-	title.textContent = item.title || wlGetTitle(sourceDoc, metadata) || "Westlaw Document";
-	header.appendChild(title);
-
-	let cite = wlGetCite(sourceDoc, metadata) || item.callNumber;
+function wlSnapshotHeaderModel(doc, item, url, metadata, title, sourceURL) {
+	let lines = [];
+	let cite = wlGetCite(doc, metadata) || item.callNumber;
 	if (cite) {
-		let citation = snapshotDoc.createElement("p");
-		citation.className = "citation";
-		citation.textContent = cite;
-		header.appendChild(citation);
+		lines.push({
+			role: "citation",
+			text: cite
+		});
 	}
-
-	let sourceURL = item.url || westlawURL(sourceDoc, url, metadata);
 	if (sourceURL) {
-		let source = snapshotDoc.createElement("p");
-		source.className = "source";
-		source.appendChild(snapshotDoc.createTextNode("Source: "));
-		let link = snapshotDoc.createElement("a");
-		link.href = sourceURL;
-		link.textContent = sourceURL;
-		source.appendChild(link);
-		header.appendChild(source);
+		lines.push({
+			role: "source",
+			text: "Source: " + sourceURL
+		});
 	}
-	wrapper.appendChild(header);
+	return {
+		title: title,
+		lines: lines
+	};
 }
 
-function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
+function wlCaseSnapshotSubdocuments(doc, item) {
 	let selectedCitation = item.volume && item.reporter && item.firstPage
 		? item.volume + " " + item.reporter + " " + item.firstPage
 		: item.callNumber || "";
 	let opinions = wlCaseOpinions(doc);
 	let annotationIndex = { value: 0 };
+	let subdocuments = [];
 	for (let i = 0; i < opinions.length; i++) {
 		let opinionData = opinions[i];
-		let section = snapshotDoc.createElement("section");
-		section.className = "opinion " + wlOpinionSnapshotClass(opinionData, i);
-		let heading = snapshotDoc.createElement("h2");
-		heading.textContent = wlOpinionLabel(opinionData, i);
-		section.appendChild(heading);
-		let author = wlOpinionAuthor(opinionData.container);
-		if (author) {
-			let authorNode = snapshotDoc.createElement("p");
-			authorNode.className = "opinionAuthor";
-			authorNode.setAttribute("data-juris-lit-condensed-head", "opinion-author");
-			authorNode.textContent = author;
-			section.appendChild(authorNode);
-		}
 		let pageIndex = wlPageMarkerIndex(doc, opinionData.container || opinionData.body, selectedCitation);
-		wlAppendSnapshotContent(doc, snapshotDoc, opinionData.body, section, {
+		let blocks = wlSnapshotContentBlocks(doc, opinionData.body, {
 			pageIndex,
 			includedParagraphs: [],
 			includedFootnotes: [],
 			annotationIndex
 		});
-		if (wlClean(section.textContent)) wrapper.appendChild(section);
+		let subdocument = {
+			title: wlOpinionLabel(opinionData, i),
+			tone: wlOpinionSnapshotModelTone(opinionData, i),
+			bylineCondensedHead: "opinion-author",
+			blocks
+		};
+		let author = wlOpinionAuthor(opinionData.container);
+		if (author) {
+			subdocument.byline = author;
+		}
+		if (wlSnapshotBlocksHaveText(blocks) || subdocument.title || subdocument.byline) {
+			subdocuments.push(subdocument);
+		}
 	}
+	return subdocuments;
 }
 
-function wlAppendGenericSnapshot(doc, snapshotDoc, wrapper, root, item, metadata) {
-	wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, {
+function wlGenericSnapshotBlocks(doc, root, item, metadata) {
+	return wlSnapshotContentBlocks(doc, root, {
 		pageIndex: wlSnapshotPageIndex(doc, root, item, metadata),
 		includedParagraphs: [],
 		includedFootnotes: [],
@@ -755,14 +741,14 @@ function wlAppendGenericSnapshot(doc, snapshotDoc, wrapper, root, item, metadata
 	});
 }
 
-function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root, item, metadata) {
+function wlRestatementSnapshotBlocks(doc, root, item, metadata) {
 	let section = wlGetSectionRoot(doc) || root;
 	let boundary = wlRestatementBoundaryNode(section);
 	let caseCitationsBoundary = wlRestatementCaseCitationsNode(section);
 	let ruleBoundary = wlRestatementCommentNode(section) || boundary;
 	let rule = wlRestatementRuleRoot(section, ruleBoundary);
 	let ruleParagraphs = rule ? wlRestatementRuleParagraphs(rule, ruleBoundary) : [];
-	wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, {
+	let blocks = wlSnapshotContentBlocks(doc, root, {
 		pageIndex: wlSnapshotPageIndex(doc, root, item, metadata),
 		includedParagraphs: [],
 		includedFootnotes: [],
@@ -770,6 +756,299 @@ function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root, item, meta
 		condensedHeadParagraphs: ruleParagraphs,
 		boundaryNode: caseCitationsBoundary
 	});
+	return wlPromoteRestatementRuleBlocks(blocks);
+}
+
+function wlPromoteRestatementRuleBlocks(blocks) {
+	let promoted = [];
+	let ruleSubdocument = null;
+	let flushRule = () => {
+		if (ruleSubdocument && ruleSubdocument.blocks.length) {
+			promoted.push(ruleSubdocument);
+		}
+		ruleSubdocument = null;
+	};
+	for (let block of blocks) {
+		if (block.condensedHead === "restatement-rule") {
+			if (!ruleSubdocument) {
+				ruleSubdocument = {
+					type: "subdocument",
+					title: "Rule",
+					tone: "important",
+					neverCollapse: true,
+					blocks: []
+				};
+			}
+			delete block.condensedHead;
+			ruleSubdocument.blocks.push(block);
+			continue;
+		}
+		if (ruleSubdocument && block.type === "footnote") {
+			ruleSubdocument.blocks.push(block);
+			continue;
+		}
+		flushRule();
+		promoted.push(block);
+	}
+	flushRule();
+	return promoted;
+}
+
+function wlSnapshotContentBlocks(doc, root, options) {
+	let scratchDoc = doc.implementation.createHTMLDocument("Westlaw Semantic Snapshot");
+	let wrapper = scratchDoc.createElement("div");
+	wlAppendSnapshotContent(doc, scratchDoc, root, wrapper, options);
+	return wlSnapshotModelBlocks(Array.from(wrapper.childNodes));
+}
+
+function wlSnapshotModelBlocks(nodes) {
+	let blocks = [];
+	for (let node of nodes) {
+		let block = wlSnapshotModelBlock(node);
+		if (Array.isArray(block)) {
+			blocks.push(...block);
+		}
+		else if (block) {
+			blocks.push(block);
+		}
+	}
+	return blocks;
+}
+
+function wlSnapshotModelBlock(node) {
+	if (!node) return null;
+	if (node.nodeType === Node.TEXT_NODE) {
+		let text = wlClean(node.nodeValue);
+		return text ? { type: "paragraph", text } : null;
+	}
+	if (node.nodeType !== Node.ELEMENT_NODE) return null;
+	if (node.classList.contains("locatorIndicator")) {
+		return wlSnapshotModelLocator(node);
+	}
+	let tag = node.tagName;
+	if (tag === "P") {
+		return wlSnapshotApplyBlockAttributes(node, {
+			type: "paragraph",
+			content: wlSnapshotModelInlineContent(node)
+		});
+	}
+	if (/^H[1-6]$/.test(tag)) {
+		return wlSnapshotApplyBlockAttributes(node, {
+			type: "heading",
+			level: parseInt(tag[1]),
+			content: wlSnapshotModelInlineContent(node)
+		});
+	}
+	if (tag === "BLOCKQUOTE") {
+		let blocks = wlSnapshotModelBlocks(Array.from(node.childNodes));
+		let block = {
+			type: "quoteBlock",
+			blocks
+		};
+		if (!blocks.length) {
+			block.content = wlSnapshotModelInlineContent(node);
+		}
+		return wlSnapshotApplyBlockAttributes(node, block);
+	}
+	if (tag === "UL" || tag === "OL") {
+		return wlSnapshotApplyBlockAttributes(node, {
+			type: "list",
+			ordered: tag === "OL",
+			items: Array.from(node.children)
+				.filter(child => child.tagName === "LI")
+				.map(wlSnapshotModelListItem)
+				.filter(Boolean)
+		});
+	}
+	if (tag === "LI") {
+		return wlSnapshotModelListItem(node);
+	}
+	if (node.classList.contains("footnote")) {
+		return wlSnapshotApplyBlockAttributes(node, {
+			type: "footnote",
+			blocks: wlSnapshotModelBlocks(Array.from(node.childNodes))
+		});
+	}
+	if (tag === "DIV" || tag === "SECTION" || tag === "ARTICLE" || tag === "MAIN") {
+		return wlSnapshotModelBlocks(Array.from(node.childNodes));
+	}
+	let content = wlSnapshotModelInlineContent(node);
+	return content.length ? wlSnapshotApplyBlockAttributes(node, {
+		type: "paragraph",
+		content
+	}) : null;
+}
+
+function wlSnapshotModelListItem(node) {
+	let content = [];
+	let blocks = [];
+	for (let child of Array.from(node.childNodes)) {
+		if (wlSnapshotModelIsBlockElement(child)) {
+			let block = wlSnapshotModelBlock(child);
+			if (Array.isArray(block)) blocks.push(...block);
+			else if (block) blocks.push(block);
+		}
+		else {
+			content.push(...wlSnapshotModelInlineParts(child));
+		}
+	}
+	return wlSnapshotApplyBlockAttributes(node, {
+		type: "listItem",
+		content,
+		blocks
+	});
+}
+
+function wlSnapshotModelIsBlockElement(node) {
+	return node && node.nodeType === Node.ELEMENT_NODE
+		&& (/^(P|BLOCKQUOTE|UL|OL|DIV|SECTION|ARTICLE|MAIN)$/.test(node.tagName)
+			|| node.classList.contains("footnote")
+			|| /^H[1-6]$/.test(node.tagName));
+}
+
+function wlSnapshotModelInlineContent(node) {
+	let content = [];
+	for (let child of Array.from(node.childNodes)) {
+		content.push(...wlSnapshotModelInlineParts(child));
+	}
+	return content.length ? content : [wlClean(node.textContent)];
+}
+
+function wlSnapshotModelInlineParts(node) {
+	if (!node) return [];
+	if (node.nodeType === Node.TEXT_NODE) {
+		return node.nodeValue ? [node.nodeValue] : [];
+	}
+	if (node.nodeType !== Node.ELEMENT_NODE) return [];
+	if (node.classList.contains("locatorIndicator")) {
+		return [wlSnapshotModelLocator(node)];
+	}
+	if (node.tagName === "BR") {
+		return [{ type: "br" }];
+	}
+	let type = wlSnapshotModelInlineType(node);
+	let annotationSeed = wlSnapshotModelAnnotationSeed(node);
+	let content = wlSnapshotModelInlineContent(node);
+	if (!type && !annotationSeed) {
+		return content;
+	}
+	let part = {
+		type: type || "span",
+		content
+	};
+	if (node.tagName === "A") {
+		let href = node.href || node.getAttribute("href");
+		if (href) part.href = href;
+	}
+	if (annotationSeed) {
+		part.annotationSeed = annotationSeed;
+	}
+	return [part];
+}
+
+function wlSnapshotModelInlineType(node) {
+	let tag = node.tagName;
+	if (tag === "EM" || tag === "I") return "em";
+	if (tag === "STRONG" || tag === "B") return "strong";
+	if (tag === "SUP") return "sup";
+	if (tag === "SUB") return "sub";
+	if (tag === "A") return "a";
+	if (tag === "CODE") return "code";
+	if (tag === "SMALL") return "small";
+	if (tag === "U") return "u";
+	if (tag === "SPAN" && wlSnapshotModelAnnotationSeed(node)) return "span";
+	return "";
+}
+
+function wlSnapshotModelLocator(node) {
+	let kind = "locator";
+	for (let className of Array.from(node.classList || [])) {
+		if (className.indexOf("locator-") === 0) {
+			kind = className.slice("locator-".length);
+			break;
+		}
+	}
+	return {
+		type: "locatorIndicator",
+		kind,
+		text: wlClean(node.textContent),
+		prefix: node.classList.contains("prefixPageNumber")
+	};
+}
+
+function wlSnapshotApplyBlockAttributes(node, block) {
+	let level = wlSnapshotModelNestingLevel(node);
+	if (level) {
+		block.nestingLevel = level;
+	}
+	let condensedHead = node.getAttribute("data-juris-lit-condensed-head");
+	if (condensedHead) {
+		block.condensedHead = condensedHead;
+	}
+	let annotationSeed = wlSnapshotModelAnnotationSeed(node);
+	if (annotationSeed) {
+		block.annotationSeed = annotationSeed;
+	}
+	return block;
+}
+
+function wlSnapshotModelNestingLevel(node) {
+	let level = parseInt(node.getAttribute("data-juris-lit-nesting-level") || "", 10);
+	if (Number.isFinite(level) && level > 0) return level;
+	for (let className of Array.from(node.classList || [])) {
+		let match = className.match(/^nestingLevel-(\d+)$/);
+		if (match) return parseInt(match[1]);
+	}
+	return 0;
+}
+
+function wlSnapshotModelAnnotationSeed(node) {
+	let encoded = node.getAttribute("data-juris-lit-annotation");
+	if (!encoded) return null;
+	try {
+		let annotation = JSON.parse(decodeURIComponent(encoded));
+		return {
+			id: node.id,
+			type: annotation.type,
+			text: annotation.text || wlClean(node.textContent),
+			color: annotation.color,
+			sortIndex: annotation.sortIndex,
+			position: annotation.position
+		};
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function wlOpinionSnapshotModelTone(opinionData, index) {
+	let kind = wlOpinionKind(opinionData, index);
+	if (kind === "dissent" || kind === "concurrence-dissent") return "red";
+	if (kind === "concurrence") return "blue";
+	if (kind === "separate") return "orange";
+	return "default";
+}
+
+function wlSnapshotModelHasContent(model) {
+	return wlSnapshotBlocksHaveText(model.blocks)
+		|| wlSnapshotBlocksHaveText(model.subdocuments);
+}
+
+function wlSnapshotBlocksHaveText(blocks) {
+	for (let block of blocks || []) {
+		if (!block) continue;
+		if (wlClean(block.text) || wlClean(block.title) || wlClean(block.byline)) return true;
+		if (Array.isArray(block.content) && block.content.some(wlSnapshotInlineHasText)) return true;
+		if (wlSnapshotBlocksHaveText(block.blocks) || wlSnapshotBlocksHaveText(block.subdocuments)) return true;
+		if (Array.isArray(block.items) && wlSnapshotBlocksHaveText(block.items)) return true;
+	}
+	return false;
+}
+
+function wlSnapshotInlineHasText(part) {
+	if (typeof part === "string") return !!wlClean(part);
+	if (!part || typeof part !== "object") return false;
+	return !!wlClean(part.text) || (Array.isArray(part.content) && part.content.some(wlSnapshotInlineHasText));
 }
 
 function wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, options) {
@@ -822,39 +1101,6 @@ function wlShouldSkipSnapshotNode(node) {
 		|| wlIsInsideFootnote(node)
 		|| wlShouldStopCodeNode(node)
 		|| /\b(?:co_search|search|sidebar|navigation|toolbar|toc|result|filter)\b/i.test(cls + " " + id);
-}
-
-function wlOpinionSnapshotClass(opinionData, index) {
-	let kind = wlOpinionKind(opinionData, index);
-	if (kind === "concurrence-dissent") return "concurrence dissent";
-	if (kind === "concurrence") return "concurrence";
-	if (kind === "dissent") return "dissent";
-	if (kind === "separate") return "separate";
-	return "majority";
-}
-
-function wlSnapshotCSS() {
-	return [
-		"html { background: #faf6ee; }",
-		"body { margin: 0; color: #241f1a; background: #faf6ee; font-family: Georgia, 'Times New Roman', serif; font-size: var(--juris-lit-note-font-size, 17px); line-height: 1.55; }",
-		".document { max-width: 780px; margin: 0 auto; padding: 3rem 2rem 4rem; }",
-		".documentHeader { border-bottom: 1px solid #d8cdbd; margin-bottom: 2rem; padding-bottom: 1rem; }",
-		"h1 { font-size: 1.65em; line-height: 1.25; margin: 0 0 .75rem; }",
-		"h2 { font-size: 1.2em; margin: 2rem 0 .75rem; }",
-		"h4 { font-size: 1em; margin: 1.3rem 0 .45rem; text-transform: uppercase; letter-spacing: .04em; }",
-		"p { margin: .7rem 0; }",
-		".citation, .source, .opinionAuthor { color: #665b4d; font-size: .92em; }",
-		".source a { color: inherit; text-decoration: underline; text-decoration-thickness: .06em; text-underline-offset: .12em; }",
-		".opinion { margin: 1.5rem 0; }",
-		".opinion.concurrence { background: #edf7fb; border-left: 4px solid #9dc9dd; padding: 1rem 1.25rem; }",
-		".opinion.dissent { background: #fff0ee; border-left: 4px solid #e2a199; padding: 1rem 1.25rem; }",
-		".opinion.separate { background: #f2f2f2; border-left: 4px solid #c9c9c9; padding: 1rem 1.25rem; }",
-		".pageNumber { color: #745c35; font-weight: 700; margin-right: .2rem; }",
-		".prefixPageNumber { color: #8a7d6c; font-size: .88em; font-weight: 400; }",
-		".footnote { color: #51483c; font-size: .9em; margin: .25rem 0 .9rem 2rem; }",
-		".footnoteNumber { color: #745c35; font-weight: 700; }",
-		"blockquote { border-left: 3px solid #d8cdbd; margin: .8rem 0 .8rem 1.2rem; padding-left: 1rem; }"
-	].join("\n");
 }
 
 function wlAppendCodeNode(doc, wrapper, node) {
@@ -1147,7 +1393,7 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 		let pageText = wlPageNumberText(node, pageIndex);
 		if (!pageText) return [];
 		cleanNode = doc.createElement("span");
-		cleanNode.className = "pageNumber";
+		cleanNode.className = "locatorIndicator pageNumber locator-star-page";
 		cleanNode.textContent = pageText;
 		return [cleanNode];
 	}
@@ -1165,8 +1411,13 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	}
 	else if (tag === "DIV" && node.className.includes("co_paragraphText")) {
 		cleanNode = doc.createElement("p");
-		let indentStyle = options.snapshot ? wlCodeParagraphStyle(node) : wlIndentStyle(node);
-		if (indentStyle) cleanNode.setAttribute("style", indentStyle);
+		if (options.snapshot) {
+			wlApplySnapshotNesting(cleanNode, wlCodeParagraphNestingLevel(node));
+		}
+		else {
+			let indentStyle = wlIndentStyle(node);
+			if (indentStyle) cleanNode.setAttribute("style", indentStyle);
+		}
 	}
 	else if (tag === "DIV" && node.className.includes("co_headtext")) {
 		cleanNode = doc.createElement("h4");
@@ -1196,21 +1447,21 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	for (let child of node.childNodes) children.push(...wlSanitizeNode(child, doc, pageIndex, options));
 	if (!cleanNode) return children;
 	if (tag === "DIV" && node.className.includes("co_paragraphText") && children.some(wlIsBlockquoteElement)) {
-		let indentStyle = options.snapshot ? wlCodeParagraphStyle(node) : wlIndentStyle(node);
-		return wlSplitParagraphAroundBlockquotes(doc, children, indentStyle);
+		let indent = options.snapshot ? wlCodeParagraphNestingLevel(node) : wlIndentStyle(node);
+		return wlSplitParagraphAroundBlockquotes(doc, children, indent, options.snapshot);
 	}
 	cleanNode.append(...children);
 	return wlClean(cleanNode.textContent) || cleanNode.querySelector(".pageNumber") ? [cleanNode] : [];
 }
 
-function wlSplitParagraphAroundBlockquotes(doc, children, indentStyle) {
+function wlSplitParagraphAroundBlockquotes(doc, children, indent, isSnapshot) {
 	let nodes = [];
-	let paragraph = wlNewParagraph(doc, indentStyle);
+	let paragraph = wlNewParagraph(doc, indent, isSnapshot);
 	for (let child of children) {
 		if (wlIsBlockquoteElement(child)) {
 			wlPushNonemptyNode(nodes, paragraph);
 			nodes.push(child);
-			paragraph = wlNewParagraph(doc, indentStyle);
+			paragraph = wlNewParagraph(doc, indent, isSnapshot);
 		}
 		else {
 			paragraph.appendChild(child);
@@ -1220,9 +1471,14 @@ function wlSplitParagraphAroundBlockquotes(doc, children, indentStyle) {
 	return nodes;
 }
 
-function wlNewParagraph(doc, indentStyle) {
+function wlNewParagraph(doc, indent, isSnapshot) {
 	let paragraph = doc.createElement("p");
-	if (indentStyle) paragraph.setAttribute("style", indentStyle);
+	if (isSnapshot) {
+		wlApplySnapshotNesting(paragraph, indent);
+	}
+	else if (indent) {
+		paragraph.setAttribute("style", indent);
+	}
 	return paragraph;
 }
 
@@ -1235,6 +1491,12 @@ function wlIsBlockquoteElement(node) {
 }
 
 function wlIndentStyle(node, structuralLevel) {
+	let level = wlIndentLevel(node, structuralLevel);
+	if (!level) return "";
+	return "padding-left: " + (level * 20) + "px;";
+}
+
+function wlIndentLevel(node, structuralLevel) {
 	let cls = wlClassTrail(node);
 	let indent = cls.match(/\bco_indentLeft([0-9]+)\b/);
 	let hanging = cls.match(/\bco_indentHanging([0-9]+)\b/);
@@ -1242,8 +1504,17 @@ function wlIndentStyle(node, structuralLevel) {
 	let explicitLevel = indent ? parseInt(indent[1]) : plainIndent ? 1 : 0;
 	if (!explicitLevel && hanging) explicitLevel = parseInt(hanging[1]);
 	let level = Math.max(explicitLevel, structuralLevel || 0);
-	if (!level) return "";
-	return "padding-left: " + (level * 20) + "px;";
+	return level || 0;
+}
+
+function wlCodeParagraphNestingLevel(node) {
+	return wlIndentLevel(node, wlCodeParagraphDepth(node));
+}
+
+function wlApplySnapshotNesting(node, level) {
+	if (!level) return;
+	node.setAttribute("data-juris-lit-nesting-level", String(level));
+	node.classList.add("nestingLevel-" + level);
 }
 
 function wlClassTrail(node) {
@@ -1261,7 +1532,7 @@ function wlEnsureLeadingPageNumber(nodes, pageNumber, doc) {
 	let firstBlock = wlFirstPageNumberBlock(nodes);
 	if (!firstBlock || wlStartsWithPageNumber(firstBlock)) return;
 	let page = doc.createElement("span");
-	page.className = "pageNumber prefixPageNumber";
+	page.className = "locatorIndicator pageNumber prefixPageNumber locator-page";
 	page.textContent = pageNumber;
 	firstBlock.insertBefore(page, firstBlock.firstChild);
 }
@@ -1394,7 +1665,7 @@ function wlSanitizeFootnote(footnote, doc, pageIndex, options) {
 	let pageText = wlFootnotePageNumber(footnote, pageIndex);
 	if (pageText) {
 		let page = doc.createElement("span");
-		page.className = "pageNumber";
+		page.className = "locatorIndicator pageNumber locator-page";
 		page.textContent = pageText;
 		markers.push(page);
 	}
