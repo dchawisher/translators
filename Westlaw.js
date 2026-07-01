@@ -648,7 +648,7 @@ function wlBuildSnapshotHTML(doc, item, url, metadata, profile) {
 	snapshotDoc.documentElement.setAttribute("lang", "en");
 	wlAppendSnapshotHead(snapshotDoc, item, url, metadata);
 	let body = snapshotDoc.body;
-	body.className = "westlaw-snapshot juris-lit-semantic-snapshot";
+	body.className = "westlaw-snapshot citate-semantic-snapshot";
 
 	let main = snapshotDoc.createElement("main");
 	main.className = "document";
@@ -677,7 +677,7 @@ function wlAppendSnapshotHead(snapshotDoc, item, url, metadata) {
 	title.textContent = item.title || "Westlaw Snapshot";
 	head.appendChild(title);
 	let canonical = snapshotDoc.createElement("meta");
-	canonical.setAttribute("name", "juris-lit-source-url");
+	canonical.setAttribute("name", "citate-source-url");
 	canonical.setAttribute("content", item.url || westlawURL(snapshotDoc, url, metadata));
 	head.appendChild(canonical);
 	let style = snapshotDoc.createElement("style");
@@ -731,7 +731,7 @@ function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 		if (author) {
 			let authorNode = snapshotDoc.createElement("p");
 			authorNode.className = "opinionAuthor";
-			authorNode.setAttribute("data-juris-lit-condensed-head", "opinion-author");
+			authorNode.setAttribute("data-citate-condensed-head", "opinion-author");
 			authorNode.textContent = author;
 			section.appendChild(authorNode);
 		}
@@ -799,7 +799,7 @@ function wlAppendSnapshotParagraph(doc, snapshotDoc, wrapper, paragraph, options
 	if (options.condensedHeadParagraphs && options.condensedHeadParagraphs.includes(paragraph)) {
 		for (let node of sanitized) {
 			if (node.nodeType === Node.ELEMENT_NODE && node.tagName === "P") {
-				node.setAttribute("data-juris-lit-condensed-head", "restatement-rule");
+				node.setAttribute("data-citate-condensed-head", "restatement-rule");
 			}
 		}
 	}
@@ -836,7 +836,7 @@ function wlOpinionSnapshotClass(opinionData, index) {
 function wlSnapshotCSS() {
 	return [
 		"html { background: #faf6ee; }",
-		"body { margin: 0; color: #241f1a; background: #faf6ee; font-family: Georgia, 'Times New Roman', serif; font-size: var(--juris-lit-note-font-size, 17px); line-height: 1.55; }",
+		"body { margin: 0; color: #241f1a; background: #faf6ee; font-family: Georgia, 'Times New Roman', serif; font-size: var(--citate-note-font-size, 17px); line-height: 1.55; }",
 		".document { max-width: 780px; margin: 0 auto; padding: 3rem 2rem 4rem; }",
 		".documentHeader { border-bottom: 1px solid #d8cdbd; margin-bottom: 2rem; padding-bottom: 1rem; }",
 		"h1 { font-size: 1.65em; line-height: 1.25; margin: 0 0 .75rem; }",
@@ -1157,7 +1157,7 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 		if (options.snapshot) {
 			let annotationID = wlSnapshotAnnotationID(options);
 			cleanNode.id = annotationID;
-			cleanNode.setAttribute("data-juris-lit-annotation", wlSnapshotAnnotationData(node, annotationID, color, options.annotationIndex.value));
+			cleanNode.setAttribute("data-citate-annotation", wlSnapshotAnnotationData(node, annotationID, color, options.annotationIndex.value));
 		}
 		else {
 			cleanNode.setAttribute("style", "background-color: " + color);

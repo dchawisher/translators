@@ -1311,7 +1311,7 @@ function importItem(newItem, node) {
 	if (newItem.itemType == "attachment") {
 		newItem.note = getFirstResults(node, [n.dc + "description", n.dc1_0 + "description", n.dcterms + "description"], true);
 	}
-	// extra for Zotero RDF
+	// extra for Citate RDF
 	else if (isZoteroRDF) {
 		newItem.extra = getFirstResults(node, [n.dc + "description"], true);
 	}

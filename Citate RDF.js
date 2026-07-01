@@ -1,6 +1,6 @@
 {
 	"translatorID": "14763d24-8ba0-45df-8f52-b8d1108e7ac9",
-	"label": "Zotero RDF",
+	"label": "Citate RDF",
 	"creator": "Simon Kornblith",
 	"target": "rdf",
 	"minVersion": "1.0.0b4.r1",
@@ -509,7 +509,7 @@ function generateItem(item, zoteroType, resource) {
 		// END NSF
 		// THIS CATCHES ALL REMAINING PROPERTIES
 		} else if (ignoreProperties.indexOf(property) == -1) {
-			Zotero.debug("Zotero RDF: using Zotero namespace for property "+property);
+			Zotero.debug("Citate RDF: using Zotero namespace for property "+property);
 			Zotero.RDF.addStatement(resource, n.z+property, value, true);
 		}
 	}
