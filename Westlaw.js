@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-30 02:13:25"
+	"lastUpdated": "2026-06-30 22:15:45"
 }
 
 
@@ -659,10 +659,10 @@ function wlBuildSnapshotHTML(doc, item, url, metadata, profile) {
 		wlAppendCaseSnapshot(doc, snapshotDoc, main, item);
 	}
 	else if (profile.kind === "restatement") {
-		wlAppendRestatementSnapshot(doc, snapshotDoc, main, root);
+		wlAppendRestatementSnapshot(doc, snapshotDoc, main, root, item, metadata);
 	}
 	else {
-		wlAppendGenericSnapshot(doc, snapshotDoc, main, root);
+		wlAppendGenericSnapshot(doc, snapshotDoc, main, root, item, metadata);
 	}
 
 	return wlClean(main.textContent) ? "<!DOCTYPE html>\n" + snapshotDoc.documentElement.outerHTML : "";
@@ -746,16 +746,16 @@ function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 	}
 }
 
-function wlAppendGenericSnapshot(doc, snapshotDoc, wrapper, root) {
+function wlAppendGenericSnapshot(doc, snapshotDoc, wrapper, root, item, metadata) {
 	wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, {
-		pageIndex: null,
+		pageIndex: wlSnapshotPageIndex(doc, root, item, metadata),
 		includedParagraphs: [],
 		includedFootnotes: [],
 		annotationIndex: { value: 0 }
 	});
 }
 
-function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root) {
+function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root, item, metadata) {
 	let section = wlGetSectionRoot(doc) || root;
 	let boundary = wlRestatementBoundaryNode(section);
 	let caseCitationsBoundary = wlRestatementCaseCitationsNode(section);
@@ -763,7 +763,7 @@ function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root) {
 	let rule = wlRestatementRuleRoot(section, ruleBoundary);
 	let ruleParagraphs = rule ? wlRestatementRuleParagraphs(rule, ruleBoundary) : [];
 	wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, {
-		pageIndex: null,
+		pageIndex: wlSnapshotPageIndex(doc, root, item, metadata),
 		includedParagraphs: [],
 		includedFootnotes: [],
 		annotationIndex: { value: 0 },
@@ -1283,6 +1283,19 @@ function wlStartsWithPageNumber(node) {
 	return false;
 }
 
+function wlSnapshotPageIndex(doc, root, item, metadata) {
+	let pageIndex = wlPageMarkerIndex(doc, root, wlSnapshotPageCitation(item, doc, metadata));
+	return pageIndex.markers.length ? pageIndex : null;
+}
+
+function wlSnapshotPageCitation(item, doc, metadata) {
+	if (item) {
+		if (item.volume && item.reporter && item.firstPage) return item.volume + " " + item.reporter + " " + item.firstPage;
+		if (item.callNumber) return item.callNumber;
+	}
+	return wlGetCite(doc, metadata);
+}
+
 function wlPageMarkerIndex(doc, root, selectedCitation) {
 	let series = wlPageSeriesMap(doc);
 	let selectedPageset = wlSelectedPageset(series, selectedCitation);
@@ -1292,6 +1305,7 @@ function wlPageMarkerIndex(doc, root, selectedCitation) {
 		markers: markers,
 		selectedPageset: selectedPageset,
 		singlePageset: pagesets.length === 1 ? pagesets[0] : "",
+		unscopedPageset: markers.length > 0 && pagesets.length === 0,
 		series: series
 	};
 }
@@ -1345,6 +1359,7 @@ function wlGoverningPageNumber(pageIndex, node) {
 function wlMarkersForPrefix(pageIndex) {
 	if (pageIndex.selectedPageset) return pageIndex.markers.filter(marker => marker.pageset === pageIndex.selectedPageset || !marker.pageset);
 	if (pageIndex.singlePageset) return pageIndex.markers;
+	if (pageIndex.unscopedPageset) return pageIndex.markers;
 	return [];
 }
 
@@ -1363,7 +1378,7 @@ function wlPageNumberText(node, pageIndex) {
 	let marker = wlMarkerForNode(pageIndex, node);
 	if (!marker) return raw ? "[" + raw + "] " : "";
 	if (pageIndex.selectedPageset && marker.pageset && marker.pageset !== pageIndex.selectedPageset) return "";
-	if (!pageIndex.selectedPageset && !pageIndex.singlePageset) return raw ? "[" + raw + "] " : "";
+	if (!pageIndex.selectedPageset && !pageIndex.singlePageset && !pageIndex.unscopedPageset) return raw ? "[" + raw + "] " : "";
 	return "[" + marker.text + "] ";
 }
 
