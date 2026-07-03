@@ -37,12 +37,13 @@ async function loadTranslators() {
 }
 
 async function serveMetadata(req, res) {
-	if (!translators.length) await loadTranslators();
+	await loadTranslators();
 	res.writeHead(200);
 	res.end(JSON.stringify(translators.map(t => t.metadata)));
 }
 
 async function serveCode(req, res) {
+	await loadTranslators();
 	const id = decodeURI(req.url.split('/')[2].split('?')[0]);
 	if (idToTranslator[id]) {
 		res.writeHead(200);

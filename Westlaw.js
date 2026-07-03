@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-30 22:15:45"
+	"lastUpdated": "2026-07-02 20:52:09"
 }
 
 
@@ -673,16 +673,20 @@ function wlAppendSnapshotHead(snapshotDoc, item, url, metadata) {
 	let meta = snapshotDoc.createElement("meta");
 	meta.setAttribute("charset", "utf-8");
 	head.appendChild(meta);
-	let title = snapshotDoc.createElement("title");
+	// createHTMLDocument() already added a <title>
+	let title = snapshotDoc.querySelector("head > title");
+	if (!title) {
+		title = snapshotDoc.createElement("title");
+		head.appendChild(title);
+	}
 	title.textContent = item.title || "Westlaw Snapshot";
-	head.appendChild(title);
 	let canonical = snapshotDoc.createElement("meta");
 	canonical.setAttribute("name", "citate-source-url");
 	canonical.setAttribute("content", item.url || westlawURL(snapshotDoc, url, metadata));
 	head.appendChild(canonical);
-	let style = snapshotDoc.createElement("style");
-	style.textContent = wlSnapshotCSS();
-	head.appendChild(style);
+	// No stylesheet: the translator supplies semantic snapshot schema markup
+	// only, and Zotero core owns the semantic snapshot CSS. Core embeds its
+	// canonical stylesheet when the snapshot is saved.
 }
 
 function wlAppendSnapshotHeader(snapshotDoc, wrapper, item, sourceDoc, url, metadata) {
@@ -700,6 +704,13 @@ function wlAppendSnapshotHeader(snapshotDoc, wrapper, item, sourceDoc, url, meta
 		header.appendChild(citation);
 	}
 
+	for (let line of wlSnapshotHeaderMetadataLines(sourceDoc)) {
+		let metadataLine = snapshotDoc.createElement("p");
+		metadataLine.className = "metadata";
+		metadataLine.textContent = line;
+		header.appendChild(metadataLine);
+	}
+
 	let sourceURL = item.url || westlawURL(sourceDoc, url, metadata);
 	if (sourceURL) {
 		let source = snapshotDoc.createElement("p");
@@ -714,6 +725,28 @@ function wlAppendSnapshotHeader(snapshotDoc, wrapper, item, sourceDoc, url, meta
 	wrapper.appendChild(header);
 }
 
+// The Westlaw prelim block (publication line, chapter/topic breadcrumb
+// headings) duplicates header information when left in the body, so it is
+// folded into the snapshot header as metadata lines and skipped from the body
+// walk (wlIsSnapshotPrelimNode)
+function wlSnapshotHeaderMetadataLines(sourceDoc) {
+	let block = sourceDoc && sourceDoc.querySelector ? sourceDoc.querySelector(".co_contentBlock.co_propBlock") : null;
+	if (!block) return [];
+	let lines = [];
+	let publicationLine = block.querySelector(".co_publicationLine");
+	if (wlText(publicationLine)) {
+		lines.push(wlText(publicationLine));
+	}
+	let breadcrumbs = Array.from(block.children)
+		.filter(child => child !== publicationLine)
+		.map(wlText)
+		.filter(Boolean);
+	if (breadcrumbs.length) {
+		lines.push(breadcrumbs.join(" › "));
+	}
+	return lines;
+}
+
 function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 	let selectedCitation = item.volume && item.reporter && item.firstPage
 		? item.volume + " " + item.reporter + " " + item.firstPage
@@ -723,24 +756,33 @@ function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 	for (let i = 0; i < opinions.length; i++) {
 		let opinionData = opinions[i];
 		let section = snapshotDoc.createElement("section");
-		section.className = "opinion " + wlOpinionSnapshotClass(opinionData, i);
+		let kindClass = wlOpinionSnapshotClass(opinionData, i);
+		let tone = wlOpinionTone(kindClass);
+		section.className = "subdocument opinion " + kindClass + (tone ? " tone-" + tone : "");
 		let heading = snapshotDoc.createElement("h2");
 		heading.textContent = wlOpinionLabel(opinionData, i);
 		section.appendChild(heading);
-		let author = wlOpinionAuthor(opinionData.container);
+		let authorLine = wlOpinionAuthorNode(opinionData.container);
+		let author = wlText(authorLine);
 		if (author) {
 			let authorNode = snapshotDoc.createElement("p");
-			authorNode.className = "opinionAuthor";
+			authorNode.className = "opinionAuthor subdocumentByline";
 			authorNode.setAttribute("data-citate-condensed-head", "opinion-author");
 			authorNode.textContent = author;
 			section.appendChild(authorNode);
 		}
 		let pageIndex = wlPageMarkerIndex(doc, opinionData.container || opinionData.body, selectedCitation);
-		wlAppendSnapshotContent(doc, snapshotDoc, opinionData.body, section, {
+		// Serialize the whole opinion container, not just the opinion body, so
+		// siblings such as vote blocks ("Justices X and Y join...") are kept
+		let contentRoot = opinionData.container && opinionData.container.contains(opinionData.body)
+			? opinionData.container
+			: opinionData.body;
+		wlAppendSnapshotContent(doc, snapshotDoc, contentRoot, section, {
 			pageIndex,
 			includedParagraphs: [],
 			includedFootnotes: [],
-			annotationIndex
+			annotationIndex,
+			authorLineNode: author ? authorLine : null
 		});
 		if (wlClean(section.textContent)) wrapper.appendChild(section);
 	}
@@ -768,14 +810,29 @@ function wlAppendRestatementSnapshot(doc, snapshotDoc, wrapper, root, item, meta
 		includedFootnotes: [],
 		annotationIndex: { value: 0 },
 		condensedHeadParagraphs: ruleParagraphs,
+		condensedHeadSection: ruleParagraphs.length ? wlImportantSubdocument(snapshotDoc) : null,
 		boundaryNode: caseCitationsBoundary
 	});
+}
+
+function wlImportantSubdocument(doc) {
+	let section = doc.createElement("section");
+	section.className = "subdocument tone-important";
+	section.setAttribute("data-citate-never-collapse", "");
+	return section;
 }
 
 function wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, options) {
 	for (let node of Array.from(root.children)) {
 		if (options.boundaryNode && wlNodeAtOrAfter(options.boundaryNode, node)) continue;
 		if (wlShouldSkipSnapshotNode(node)) continue;
+		// The opinion author line is already rendered as the section byline
+		if (options.authorLineNode
+				&& (node === options.authorLineNode
+					|| (node.contains(options.authorLineNode)
+						&& wlClean(node.textContent) === wlClean(options.authorLineNode.textContent)))) {
+			continue;
+		}
 		if (node.classList && node.classList.contains("co_paragraphText")) {
 			wlAppendSnapshotParagraph(doc, snapshotDoc, wrapper, node, options);
 			continue;
@@ -785,25 +842,67 @@ function wlAppendSnapshotContent(doc, snapshotDoc, root, wrapper, options) {
 			continue;
 		}
 		if (node.tagName === "UL" || node.tagName === "OL") {
+			// Unbulleted lists flatten to indented blocks: recurse so nested
+			// paragraphs flow through wlAppendSnapshotParagraph and keep their
+			// condensed-head/subdocument routing and footnotes
+			if (wlIsUnbulletedList(node)) {
+				wlAppendSnapshotContent(doc, snapshotDoc, node, wrapper, options);
+				continue;
+			}
 			wrapper.append(...wlSanitizeNode(node, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex }));
 			continue;
 		}
-		wlAppendSnapshotContent(doc, snapshotDoc, node, wrapper, options);
+		if (node.querySelector(".co_paragraphText, .co_headtext, ul, ol")) {
+			wlAppendSnapshotContent(doc, snapshotDoc, node, wrapper, options);
+			continue;
+		}
+		// Content with no recognized block shape (vote lines, unclassified
+		// notes, ...) is kept as plain text in place, never silently dropped
+		wlAppendSnapshotFallbackText(snapshotDoc, node, wrapper, options);
 	}
+}
+
+function wlAppendSnapshotFallbackText(snapshotDoc, node, wrapper, options) {
+	if (!wlClean(node.textContent)) return;
+	let sanitized = wlSanitizeNode(node, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex });
+	let paragraph = snapshotDoc.createElement("p");
+	let flush = () => {
+		if (wlClean(paragraph.textContent) || paragraph.querySelector(".pageNumber")) {
+			wrapper.appendChild(paragraph);
+		}
+		paragraph = snapshotDoc.createElement("p");
+	};
+	for (let child of sanitized) {
+		if (child.nodeType === Node.ELEMENT_NODE && /^(P|BLOCKQUOTE|UL|OL|H[1-6]|TABLE)$/.test(child.tagName)) {
+			flush();
+			wrapper.appendChild(child);
+		}
+		else {
+			paragraph.appendChild(child);
+		}
+	}
+	flush();
 }
 
 function wlAppendSnapshotParagraph(doc, snapshotDoc, wrapper, paragraph, options) {
 	if (options.includedParagraphs.includes(paragraph)) return;
 	let sanitized = wlSanitizeNode(paragraph, snapshotDoc, options.pageIndex, { snapshot: true, annotationIndex: options.annotationIndex });
 	wlEnsureLeadingPageNumber(sanitized, wlGoverningPageNumber(options.pageIndex, paragraph), snapshotDoc);
+	let target = wrapper;
 	if (options.condensedHeadParagraphs && options.condensedHeadParagraphs.includes(paragraph)) {
 		for (let node of sanitized) {
 			if (node.nodeType === Node.ELEMENT_NODE && node.tagName === "P") {
 				node.setAttribute("data-citate-condensed-head", "restatement-rule");
 			}
 		}
+		if (options.condensedHeadSection) {
+			if (!options.condensedHeadSection.parentNode) {
+				wrapper.appendChild(options.condensedHeadSection);
+			}
+			target = options.condensedHeadSection;
+		}
 	}
-	wrapper.append(...sanitized);
+	target.append(...sanitized);
 	options.includedParagraphs.push(paragraph);
 
 	for (let footnote of wlFootnotesForNode(paragraph, doc)) {
@@ -821,7 +920,35 @@ function wlShouldSkipSnapshotNode(node) {
 		|| wlIsInsideExcludedBlock(node)
 		|| wlIsInsideFootnote(node)
 		|| wlShouldStopCodeNode(node)
+		|| wlIsSnapshotPrelimNode(node)
 		|| /\b(?:co_search|search|sidebar|navigation|toolbar|toc|result|filter)\b/i.test(cls + " " + id);
+}
+
+// Prelim/nav content whose information already lives in the snapshot header:
+// the citation line, the publication/breadcrumb block (folded into header
+// metadata lines), the duplicated document title, the "Currentness" jump
+// link, and internal-anchor jump lists ("Comment: | Reporter's Note | Case
+// Citations")
+function wlIsSnapshotPrelimNode(node) {
+	let cls = node.className || "";
+	if (/\b(?:co_cites|co_propBlock|co_divider|co_title|co_currentness)\b/.test(cls)) return true;
+	return wlIsInternalAnchorList(node);
+}
+
+function wlIsInternalAnchorList(node) {
+	if (!node.querySelector) return false;
+	// The jump list may sit inside an anonymous wrapper div
+	if (!/\bco_list\b/.test(node.className || "") && !node.querySelector(".co_list")) return false;
+	let links = Array.from(node.querySelectorAll("a"));
+	if (!links.length) return false;
+	if (!links.every(link => /\bco_internalLink\b/.test(link.className || "")
+			|| (link.getAttribute("href") || "").startsWith("#"))) {
+		return false;
+	}
+	// Nav lists contain nothing but their anchors
+	let clone = node.cloneNode(true);
+	for (let link of clone.querySelectorAll("a")) link.remove();
+	return !wlClean(clone.textContent);
 }
 
 function wlOpinionSnapshotClass(opinionData, index) {
@@ -833,28 +960,11 @@ function wlOpinionSnapshotClass(opinionData, index) {
 	return "majority";
 }
 
-function wlSnapshotCSS() {
-	return [
-		"html { background: #faf6ee; }",
-		"body { margin: 0; color: #241f1a; background: #faf6ee; font-family: Georgia, 'Times New Roman', serif; font-size: var(--citate-note-font-size, 17px); line-height: 1.55; }",
-		".document { max-width: 780px; margin: 0 auto; padding: 3rem 2rem 4rem; }",
-		".documentHeader { border-bottom: 1px solid #d8cdbd; margin-bottom: 2rem; padding-bottom: 1rem; }",
-		"h1 { font-size: 1.65em; line-height: 1.25; margin: 0 0 .75rem; }",
-		"h2 { font-size: 1.2em; margin: 2rem 0 .75rem; }",
-		"h4 { font-size: 1em; margin: 1.3rem 0 .45rem; text-transform: uppercase; letter-spacing: .04em; }",
-		"p { margin: .7rem 0; }",
-		".citation, .source, .opinionAuthor { color: #665b4d; font-size: .92em; }",
-		".source a { color: inherit; text-decoration: underline; text-decoration-thickness: .06em; text-underline-offset: .12em; }",
-		".opinion { margin: 1.5rem 0; }",
-		".opinion.concurrence { background: #edf7fb; border-left: 4px solid #9dc9dd; padding: 1rem 1.25rem; }",
-		".opinion.dissent { background: #fff0ee; border-left: 4px solid #e2a199; padding: 1rem 1.25rem; }",
-		".opinion.separate { background: #f2f2f2; border-left: 4px solid #c9c9c9; padding: 1rem 1.25rem; }",
-		".pageNumber { color: #745c35; font-weight: 700; margin-right: .2rem; }",
-		".prefixPageNumber { color: #8a7d6c; font-size: .88em; font-weight: 400; }",
-		".footnote { color: #51483c; font-size: .9em; margin: .25rem 0 .9rem 2rem; }",
-		".footnoteNumber { color: #745c35; font-weight: 700; }",
-		"blockquote { border-left: 3px solid #d8cdbd; margin: .8rem 0 .8rem 1.2rem; padding-left: 1rem; }"
-	].join("\n");
+function wlOpinionTone(kindClass) {
+	if (kindClass.includes("dissent")) return "red";
+	if (kindClass.includes("concurrence")) return "blue";
+	if (kindClass.includes("separate")) return "orange";
+	return "";
 }
 
 function wlAppendCodeNode(doc, wrapper, node) {
@@ -895,6 +1005,10 @@ function wlCodeParagraphStyle(node) {
 	return wlIndentStyle(node, wlCodeParagraphDepth(node));
 }
 
+function wlCodeParagraphLevel(node) {
+	return wlIndentLevel(node, wlCodeParagraphDepth(node));
+}
+
 function wlCodeParagraphDepth(node) {
 	return Math.max(wlCodeSubsectionDepth(node), wlListParagraphDepth(node));
 }
@@ -910,13 +1024,37 @@ function wlCodeSubsectionDepth(node) {
 }
 
 function wlListParagraphDepth(node) {
+	return wlListDepthFrom(node.parentElement);
+}
+
+// Every level of a flattened (unbulleted) list becomes indentation; rendered
+// lists provide their first level of indentation through the <ul> itself
+function wlListDepthFrom(start) {
 	let depth = 0;
-	let current = node.parentElement;
+	let bulleted = 0;
+	let current = start;
 	while (current && !(current.classList && (current.classList.contains("co_body") || current.classList.contains("co_section")))) {
-		if (current.tagName === "LI") depth++;
+		if (current.tagName === "LI") {
+			if (wlIsUnbulletedList(current.parentElement)) depth++;
+			else bulleted++;
+		}
 		current = current.parentElement;
 	}
-	return Math.max(depth - 1, 0);
+	return depth + Math.max(bulleted - 1, 0);
+}
+
+// Westlaw suppresses bullet glyphs on its co_list lists. Prefer the computed
+// style when the source page's CSS is live; fall back to the co_list class in
+// static/test documents
+function wlIsUnbulletedList(node) {
+	if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+	if (node.tagName !== "UL" && node.tagName !== "OL") return false;
+	let view = node.ownerDocument && node.ownerDocument.defaultView;
+	if (view && typeof view.getComputedStyle === "function") {
+		let style = view.getComputedStyle(node);
+		if (style && style.listStyleType === "none") return true;
+	}
+	return /\bco_list\b/.test(node.className || "");
 }
 
 function wlGetHighlightedDocumentNote(doc, root, options) {
@@ -1095,43 +1233,39 @@ function wlAppendRestatementRule(doc, wrapper, paragraphs) {
 function wlCaseOpinions(doc) {
 	let opinions = [];
 	for (let block of Array.from(doc.querySelectorAll(".co_opinionBlock"))) {
-		for (let body of Array.from(block.querySelectorAll(".x_opinionBody")).filter(body => !body.closest(".x_opinionCipdip"))) {
-			if (body.closest(".CipDipContent, .x_opinionConcurrence, .x_opinionDissent")) continue;
-			opinions.push({
-				body: body,
-				block: block,
-				container: wlOpinionContainer(body, block),
-				kind: "majority"
-			});
-		}
-		for (let cipdip of Array.from(block.querySelectorAll(".x_opinionCipdip"))) {
-			let body = cipdip.querySelector(".x_opinionBody");
-			if (!body) continue;
-			opinions.push({
-				body: body,
-				block: block,
-				container: cipdip,
-				kind: "cipdip"
-			});
-		}
-		for (let container of Array.from(block.querySelectorAll(".x_opinionConcurrence, .x_opinionDissent"))) {
-			let body = container.querySelector(".x_opinionBody");
-			if (!body) continue;
+		for (let body of Array.from(block.querySelectorAll(".x_opinionBody"))) {
+			let container = body.parentElement || block;
 			opinions.push({
 				body: body,
 				block: block,
 				container: container,
-				kind: container.classList.contains("x_opinionDissent") ? "dissent" : "concurrence"
+				kind: wlOpinionContainerKind(container)
 			});
 		}
 	}
 	return opinions;
 }
 
-function wlOpinionContainer(body, block) {
-	let lead = body.closest(".x_opinionLead");
-	if (lead) return lead;
-	return body.closest(".x_opinionBlockBody") || block;
+// Kind from the body's immediate container, whose classes look like
+// "co_contentBlock x_opinion<Kind> [TocShowConcurDissent]". Westlaw's spelling
+// varies (x_opinionConcurrence vs. x_opinionConcurrance), so match "concur",
+// "dissent", and "cipdip" as substrings per class name; TocShowConcurDissent
+// names both and characterizes nothing. Anything unrecognized is "majority",
+// which wlOpinionKind() renders as the lead opinion at index 0 and as a
+// separate opinion afterward.
+function wlOpinionContainerKind(container) {
+	let concur = false;
+	let dissent = false;
+	for (let cls of Array.from(container.classList || [])) {
+		if (/cipdip/i.test(cls)) return "cipdip";
+		if (/concur/i.test(cls) && /dissent/i.test(cls)) continue;
+		if (/concur/i.test(cls)) concur = true;
+		if (/dissent/i.test(cls)) dissent = true;
+	}
+	if (concur && dissent) return "cipdip";
+	if (concur) return "concurrence";
+	if (dissent) return "dissent";
+	return "majority";
 }
 
 function wlSanitizeNode(node, doc, pageIndex, options) {
@@ -1165,8 +1299,7 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	}
 	else if (tag === "DIV" && node.className.includes("co_paragraphText")) {
 		cleanNode = doc.createElement("p");
-		let indentStyle = options.snapshot ? wlCodeParagraphStyle(node) : wlIndentStyle(node);
-		if (indentStyle) cleanNode.setAttribute("style", indentStyle);
+		wlApplyIndent(cleanNode, wlSanitizedParagraphIndent(node, options));
 	}
 	else if (tag === "DIV" && node.className.includes("co_headtext")) {
 		cleanNode = doc.createElement("h4");
@@ -1186,7 +1319,13 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 		cleanNode = doc.createElement("blockquote");
 	}
 	else if (tag === "UL" || tag === "OL" || tag === "LI") {
-		cleanNode = doc.createElement(tag.toLowerCase());
+		// Westlaw renders co_list lists without bullet glyphs; emitting real
+		// list markup would invent bullets and waste column width, so their
+		// content flattens to sibling blocks carrying nesting-level indents
+		let list = tag === "LI" ? node.parentElement : node;
+		if (!wlIsUnbulletedList(list)) {
+			cleanNode = doc.createElement(tag.toLowerCase());
+		}
 	}
 	else if (tag === "BR") {
 		return [doc.createElement("br")];
@@ -1194,23 +1333,27 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 
 	let children = [];
 	for (let child of node.childNodes) children.push(...wlSanitizeNode(child, doc, pageIndex, options));
-	if (!cleanNode) return children;
+	if (!cleanNode) {
+		if (tag === "LI" && wlIsUnbulletedList(node.parentElement)) {
+			return wlGroupFlattenedListItem(doc, children, node, options);
+		}
+		return children;
+	}
 	if (tag === "DIV" && node.className.includes("co_paragraphText") && children.some(wlIsBlockquoteElement)) {
-		let indentStyle = options.snapshot ? wlCodeParagraphStyle(node) : wlIndentStyle(node);
-		return wlSplitParagraphAroundBlockquotes(doc, children, indentStyle);
+		return wlSplitParagraphAroundBlockquotes(doc, children, wlSanitizedParagraphIndent(node, options));
 	}
 	cleanNode.append(...children);
 	return wlClean(cleanNode.textContent) || cleanNode.querySelector(".pageNumber") ? [cleanNode] : [];
 }
 
-function wlSplitParagraphAroundBlockquotes(doc, children, indentStyle) {
+function wlSplitParagraphAroundBlockquotes(doc, children, indent) {
 	let nodes = [];
-	let paragraph = wlNewParagraph(doc, indentStyle);
+	let paragraph = wlNewParagraph(doc, indent);
 	for (let child of children) {
 		if (wlIsBlockquoteElement(child)) {
 			wlPushNonemptyNode(nodes, paragraph);
 			nodes.push(child);
-			paragraph = wlNewParagraph(doc, indentStyle);
+			paragraph = wlNewParagraph(doc, indent);
 		}
 		else {
 			paragraph.appendChild(child);
@@ -1220,10 +1363,67 @@ function wlSplitParagraphAroundBlockquotes(doc, children, indentStyle) {
 	return nodes;
 }
 
-function wlNewParagraph(doc, indentStyle) {
+// A flattened list item can hold bare inline content beside block children;
+// wrap each inline run in an indented paragraph so nothing floats unindented
+// between blocks
+function wlGroupFlattenedListItem(doc, children, li, options) {
+	let nodes = [];
+	let paragraph = null;
+	let flush = () => {
+		if (paragraph) wlPushNonemptyNode(nodes, paragraph);
+		paragraph = null;
+	};
+	for (let child of children) {
+		if (child.nodeType === Node.ELEMENT_NODE && /^(P|BLOCKQUOTE|UL|OL|H[1-6]|DIV|TABLE)$/.test(child.tagName)) {
+			flush();
+			nodes.push(child);
+		}
+		else {
+			if (!paragraph) {
+				paragraph = doc.createElement("p");
+				wlApplyIndent(paragraph, wlListItemIndent(li, options));
+			}
+			paragraph.appendChild(child);
+		}
+	}
+	flush();
+	return nodes;
+}
+
+function wlListItemIndent(li, options) {
+	let depth = wlListDepthFrom(li);
+	if (options.snapshot) {
+		return { level: wlIndentLevel(li, depth) };
+	}
+	return { style: wlIndentStyle(li, depth) };
+}
+
+function wlNewParagraph(doc, indent) {
 	let paragraph = doc.createElement("p");
-	if (indentStyle) paragraph.setAttribute("style", indentStyle);
+	wlApplyIndent(paragraph, indent);
 	return paragraph;
+}
+
+// Snapshot paragraphs carry semantic nesting levels (styled by Zotero core's
+// semantic snapshot CSS); note paragraphs keep inline indent styles because
+// the note editor has no semantic snapshot stylesheet
+function wlSanitizedParagraphIndent(node, options) {
+	if (options.snapshot) {
+		return { level: wlCodeParagraphLevel(node) };
+	}
+	return { style: wlIndentStyle(node) };
+}
+
+function wlApplyIndent(elem, indent) {
+	if (!indent) return;
+	if (indent.level) {
+		let level = Math.min(indent.level, 12);
+		elem.className = (elem.className ? elem.className + " " : "") + "nestingLevel-" + level;
+		elem.setAttribute("data-citate-nesting-level", String(level));
+	}
+	else if (indent.style) {
+		elem.setAttribute("style", indent.style);
+	}
 }
 
 function wlPushNonemptyNode(nodes, node) {
@@ -1234,14 +1434,18 @@ function wlIsBlockquoteElement(node) {
 	return node && node.nodeType === Node.ELEMENT_NODE && node.tagName === "BLOCKQUOTE";
 }
 
-function wlIndentStyle(node, structuralLevel) {
+function wlIndentLevel(node, structuralLevel) {
 	let cls = wlClassTrail(node);
 	let indent = cls.match(/\bco_indentLeft([0-9]+)\b/);
 	let hanging = cls.match(/\bco_indentHanging([0-9]+)\b/);
 	let plainIndent = /\bco_indentLeft\b/.test(cls);
 	let explicitLevel = indent ? parseInt(indent[1]) : plainIndent ? 1 : 0;
 	if (!explicitLevel && hanging) explicitLevel = parseInt(hanging[1]);
-	let level = Math.max(explicitLevel, structuralLevel || 0);
+	return Math.max(explicitLevel, structuralLevel || 0);
+}
+
+function wlIndentStyle(node, structuralLevel) {
+	let level = wlIndentLevel(node, structuralLevel);
 	if (!level) return "";
 	return "padding-left: " + (level * 20) + "px;";
 }
@@ -2053,7 +2257,9 @@ function wlSkipElement(node) {
 	return node.tagName === "SCRIPT"
 		|| node.tagName === "STYLE"
 		|| node.tagName === "INPUT"
-		|| (node.tagName === "BUTTON" && !cls.includes("co_footnoteReference"))
+		// Keep co_link buttons: Westlaw renders inline content links (judge
+		// names, joined-by lines) as buttons, and their text belongs in the flow
+		|| (node.tagName === "BUTTON" && !cls.includes("co_footnoteReference") && !cls.includes("co_link"))
 		|| cls.includes("co_hlStart")
 		|| cls.includes("co_hlEnd")
 		|| cls.includes("co_hlActivator")
@@ -2146,9 +2352,16 @@ function wlOpinionKind(opinionData, index) {
 	return "separate";
 }
 
+// Westlaw author-line class names vary and are sometimes misspelled
+// (x_leadAuthorLine, co_cipdipAuthorLineBlock, x_concurranceAuthorLine, ...),
+// so match "AuthorLine" as a substring
+function wlOpinionAuthorNode(block) {
+	if (!block || !block.querySelector) return null;
+	return block.querySelector('[class*="AuthorLine"]');
+}
+
 function wlOpinionAuthor(block) {
-	if (!block || !block.querySelector) return "";
-	return wlText(block.querySelector(".x_leadAuthorLine, .co_cipdipAuthorLineBlock, .x_concurrenceAuthorLine, .x_dissentAuthorLine, .AuthorLine"));
+	return wlText(wlOpinionAuthorNode(block));
 }
 
 function wlNearestCipDipHeading(node) {
