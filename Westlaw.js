@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-07-02 20:52:09"
+	"lastUpdated": "2026-07-05 19:30:00"
 }
 
 
@@ -39,6 +39,45 @@
 //Helper patterns for Title and Case Name processing
 var govPattern = /\b(?:city|county|cty\.) of\b|^state\b|^United States$|^U\.S\.$/i;
 var trimPattern = /(^( )|( |,|Inc.|Co.|LLC|LLLP|LLP)$)/mgi;
+
+// Two-letter geographic initialisms (N.C., U.S., ...) are always safe to
+// compact. Other two-letter runs are usually personal initials and only
+// compact where a party name ends (see wlCompactInitialisms).
+var geographicInitialisms = ["D.C.", "N.C.", "N.D.", "N.H.", "N.J.", "N.M.", "N.Y.", "P.R.", "R.I.", "S.C.", "S.D.", "U.S.", "V.I."];
+
+// Compact all-caps initialisms in a case name by removing their periods
+// (N.C. Forest Products -> NC Forest Products, In re J.M. -> In re JM,
+// N.L.R.B. v. Jones -> NLRB v. Jones). Deliberately conservative:
+// - only runs of two or more single capital letters, each followed by a
+//   period, qualify (never single middle initials like "John D. Smith"),
+//   and the run must not butt up against a letter or digit (N.C.App.);
+// - two-letter runs that are neither geographic nor at the end of a party
+//   name (end of caption, before " v.", or before punctuation) are kept:
+//   mid-name they are usually personal initials (R.J. Reynolds,
+//   E.I. du Pont, J.W. Hancock) that keep their periods.
+function wlCompactInitialisms(name) {
+	if (!name) return "";
+	return name.replace(/(^|[\s(])((?:[A-Z]\.){2,})(?![A-Za-z0-9])/g, function (match, lead, run, offset, whole) {
+		let letters = run.replace(/\./g, "");
+		if (letters.length === 2 && !geographicInitialisms.includes(run)) {
+			let rest = whole.slice(offset + match.length);
+			if (rest && !/^ v\.|^[,;:)'’]/.test(rest)) return match;
+		}
+		return lead + letters;
+	});
+}
+
+// A party that is exactly "U.S." is the United States: spell it out rather
+// than compacting it to "US".
+function wlExpandUnitedStates(name) {
+	let vIndex = name ? name.indexOf(" v. ") : -1;
+	if (vIndex === -1) return name;
+	let left = name.slice(0, vIndex);
+	let right = name.slice(vIndex + 4);
+	if (left === "U.S.") left = "United States";
+	if (right === "U.S.") right = "United States";
+	return left + " v. " + right;
+}
 var stockHighlightColors = {
 	yellow: "#ffd400",
 	green: "#5fb236",
@@ -260,7 +299,10 @@ function doWeb(doc, url) {
 		wlPopulateCase(item, doc, metadata);
 	}
 	else if (profile.kind === "statute" || profile.kind === "regulation") {
-		wlPopulateCodeItem(item, doc, metadata, profile.kind);
+		wlPopulateCodeItem(item, doc, metadata);
+	}
+	else if (profile.kind === "constitution") {
+		wlPopulateConstitution(item, doc, metadata);
 	}
 	else if (profile.kind === "sessionLaw") {
 		wlPopulateSessionLaw(item, doc, metadata);
@@ -297,7 +339,7 @@ function wlPopulateCase(item, doc, metadata) {
 	// Keep note generation code below for reference, but do not create notes by default.
 	// let note = wlGetCaseNote(doc, selected[2] || citations[0] || "");
 
-	item.caseName = wlGetTitle(doc, metadata);
+	item.caseName = wlCompactInitialisms(wlExpandUnitedStates(wlGetTitle(doc, metadata)));
 	item.title = item.caseName;
 	item.date = wlClean(metadata.dateFile || metadata.date || metadata.publicationDate || wlText(doc.querySelector(".co_docketDate .co_date")));
 	item.filingDate = item.date;
@@ -312,27 +354,103 @@ function wlPopulateCase(item, doc, metadata) {
 	if (wlHasNegativeHistory(doc)) item.setExtra("hasNegativeHistory", "true");
 }
 
-function wlPopulateCodeItem(item, doc, metadata, kind) {
+function wlPopulateCodeItem(item, doc, metadata) {
 	let cite = wlGetCite(doc, metadata);
 	let parsed = wlParseCodeCitation(cite);
 	let title = wlGetTitle(doc, metadata);
 	item.title = wlCodeItemTitle(title, parsed);
-	item.code = parsed.code || (kind === "regulation" ? "Regulation" : "Statute");
+	// When the cite doesn't parse, leave the code empty rather than filling it
+	// with a "Statute"/"Regulation" placeholder that reads like a code name
+	item.code = parsed.code || undefined;
 	item.codeNumber = parsed.codeNumber;
 	item.section = parsed.section || cite;
 	item.jurisdiction = wlCodeJurisdiction(parsed, metadata);
 	let effectiveDate = wlCodeEffectiveDate(doc, metadata);
 	item.publicationDate = effectiveDate;
+	wlApplyHistoricCodeVersion(item, doc, effectiveDate);
 	// let note = wlBuildCodeNote(doc, item.title, wlGetCodeBody(doc), effectiveDate);
 	// if (note) item.notes.push({ note: note });
 }
 
-function wlPopulateSessionLaw(item, doc, metadata) {
+// A historic (superseded) code section carries a "This section has been
+// updated" banner and an effective range with an end date ("October 1, 2011
+// to July 19, 2017"). Red-flag it and date it by its last effective date.
+function wlApplyHistoricCodeVersion(item, doc, effectiveDate) {
+	let range = wlClean(effectiveDate).match(/^(.*?)\s+to\s+(.+)$/i);
+	let updated = doc.querySelector(".co_versionUpdate");
+	if (!range && !updated) return;
+	item.hasNegativeHistory = "true";
+	if (range) item.date = range[2];
+}
+
+function wlPopulateConstitution(item, doc, metadata) {
+	let cite = wlGetCite(doc, metadata);
+	let parsed = wlParseConstitutionCitation(cite);
 	item.title = wlGetTitle(doc, metadata);
-	item.code = "North Carolina Session Laws";
-	item.section = wlGetCite(doc, metadata);
-	item.date = metadata.date || metadata.publicationDate || "";
-	item.callNumber = wlGetCite(doc, metadata);
+	item.code = parsed.code;
+	item.section = parsed.section;
+	item.jurisdiction = parsed.jurisdiction;
+	let effectiveDate = wlCodeEffectiveDate(doc, metadata);
+	if (effectiveDate) item.publicationDate = effectiveDate;
+	wlApplyHistoricCodeVersion(item, doc, effectiveDate);
+}
+
+// "NC CONST Art. I, § 1" → N.C. Constitution, art. I, sec. 1. Only cites
+// whose source is recognized parse; anything else falls through to the
+// generic statute handling.
+var constitutionSources = {
+	NC: { code: "N.C. Constitution", jurisdiction: "us:nc" },
+	US: { code: "U.S. Constitution", jurisdiction: "us" },
+	USC: { code: "U.S. Constitution", jurisdiction: "us" },
+	USCA: { code: "U.S. Constitution", jurisdiction: "us" }
+};
+
+function wlParseConstitutionCitation(cite) {
+	let clean = wlClean(cite);
+	let match = clean.match(/^([A-Z][A-Za-z.]*(?:\s+[A-Z][A-Za-z.]*)*?)\s+CONST\.?\s+(.+)$/i);
+	if (!match) return null;
+	let source = constitutionSources[match[1].replace(/\./g, "").toUpperCase()];
+	if (!source) return null;
+	return {
+		code: source.code,
+		jurisdiction: source.jurisdiction,
+		section: wlConstitutionSection(match[2])
+	};
+}
+
+function wlConstitutionSection(text) {
+	return wlClean(text)
+		.replace(/\bArt(?:icle)?\.?\s*/gi, "art. ")
+		.replace(/\bAmend(?:ment)?\.?\s*/gi, "amend. ")
+		.replace(/\bSec(?:tion)?s?\.?\s*/gi, "sec. ")
+		.replace(/§+\s*/g, "sec. ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function wlPopulateSessionLaw(item, doc, metadata) {
+	let cite = wlGetCite(doc, metadata);
+	let parsed = wlParseSessionLawCitation(cite);
+	item.title = wlGetTitle(doc, metadata);
+	item.code = parsed.state ? parsed.state + " Session Laws" : "Session Laws";
+	item.codeNumber = parsed.year;
+	item.section = parsed.chapter ? "ch. " + parsed.chapter : cite;
+	item.jurisdiction = parsed.state ? stateMap[parsed.state] : undefined;
+	// North Carolina session laws are cited by session-law number, S.L.
+	// <year>-<chapter>, regardless of the era's "Chapter" numbering
+	if (parsed.state === "North Carolina" && parsed.year && parsed.chapter) {
+		item.publicLawNumber = "S.L. " + parsed.year + "-" + parsed.chapter;
+	}
+	item.date = metadata.date || metadata.publicationDate || parsed.year || "";
+	item.callNumber = cite;
+}
+
+// "1995 North Carolina Laws Ch. 509 (S.B. 590)" → year, state, chapter, bill
+function wlParseSessionLawCitation(cite) {
+	let clean = wlClean(cite);
+	let match = clean.match(/^(\d{4})\s+(.+?)\s+Laws\s+(?:Ch(?:apter)?\.?\s*)?(\d+[A-Za-z0-9-]*)(?:\s+\(([^)]*)\))?/i);
+	if (!match) return {};
+	return { year: match[1], state: match[2], chapter: match[3], bill: match[4] || "" };
 }
 
 function wlPopulateFederalRegister(item, doc, metadata) {
@@ -380,7 +498,7 @@ function wlPopulateTreatise(item, doc, metadata) {
 	item.date = parsed.date || wlTreatiseDate(doc, metadata);
 	item.callNumber = cite;
 	let author = wlText(doc.querySelector("#author"));
-	if (wlLooksLikePersonalCreator(author)) wlAddCreator(item, author);
+	if (wlLooksLikePersonalCreator(wlCleanCreatorName(author))) wlAddCreator(item, author);
 	// let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
 	// if (note) item.notes.push({ note: note });
 }
@@ -396,14 +514,28 @@ function wlPopulateDictionaryEntry(item, doc, metadata) {
 }
 
 function wlPopulateArticle(item, doc, metadata) {
+	let cite = wlGetCite(doc, metadata);
+	let parsed = wlParseArticleCitation(cite);
 	item.title = wlGetTitle(doc, metadata);
-	item.publicationTitle = wlText(doc.querySelector("#pubname")) || wlFirstHeadtext(doc) || metadata.functionalCite || "";
+	item.publicationTitle = wlText(doc.querySelector("#pubname")) || parsed.publication || wlFirstHeadtext(doc) || metadata.functionalCite || "";
 	item.date = metadata.date || metadata.publicationDate || wlText(doc.querySelector(".co_date"));
-	item.pages = wlArticlePages(wlGetCite(doc, metadata));
-	item.callNumber = wlGetCite(doc, metadata);
+	item.volume = parsed.volume;
+	item.pages = parsed.page || wlArticlePages(cite);
+	item.callNumber = cite;
 	wlAddCreator(item, wlText(doc.querySelector("#author")));
 	// let note = wlGetHighlightedDocumentNote(doc, wlGetDocumentRoot(doc), { includeHeadings: true });
 	// if (note) item.notes.push({ note: note });
+}
+
+// Article cites follow "<volume> <publication> <first page> (<parenthetical>)"
+// ("222 Am. Jur. Proof of Facts 3d 87 (Originally published in 2026)"). The
+// publication is matched lazily so series ordinals ("3d", "2d") stay inside it
+// rather than being mistaken for the page number.
+function wlParseArticleCitation(cite) {
+	let clean = wlClean(cite);
+	let match = clean.match(/^(\d+[A-Za-z]?)\s+(.+?)\s+(\d+)(?:\s*[,(]|$)/);
+	if (!match) return {};
+	return { volume: match[1], publication: match[2], page: match[3] };
 }
 
 function wlGetDocumentProfile(doc, url) {
@@ -426,6 +558,11 @@ function wlGetDocumentProfile(doc, url) {
 	}
 	if (title.includes("pending/proposed regulations") || rootClass.includes("co_federalRegister") || /\bFR\b/.test(cite)) {
 		return { kind: "federalRegister", itemType: "gazette" };
+	}
+	// Constitutions are filed under "Statutes" on Westlaw; the cite ("NC CONST
+	// Art. I, § 1") is what distinguishes them
+	if (wlParseConstitutionCitation(cite)) {
+		return { kind: "constitution", itemType: "constitutionalProvision" };
 	}
 	if (title.includes("| statutes |") || rootClass.includes("co_codesStatutes") || contentType === "statutes") {
 		return { kind: "statute", itemType: "statute" };
@@ -665,7 +802,39 @@ function wlBuildSnapshotHTML(doc, item, url, metadata, profile) {
 		wlAppendGenericSnapshot(doc, snapshotDoc, main, root, item, metadata);
 	}
 
+	wlApplyLegislativeChangeMarkers(snapshotDoc, main);
 	return wlClean(main.textContent) ? "<!DOCTYPE html>\n" + snapshotDoc.documentElement.outerHTML : "";
+}
+
+// Bill and session-law text marks amendments with literal "<<+ inserted +>>"
+// and "<<- deleted ->>" runs, which may span block boundaries. Render
+// insertions bold and deletions struck through, dropping the marker glyphs.
+// Plain "<< ... >>" runs (statute cross-references) are left alone.
+function wlApplyLegislativeChangeMarkers(snapshotDoc, main) {
+	if (!/<<[+-]/.test(main.textContent)) return;
+	let textNodes = [];
+	let walker = snapshotDoc.createTreeWalker(main, 0x4 /* NodeFilter.SHOW_TEXT */);
+	while (walker.nextNode()) textNodes.push(walker.currentNode);
+	let state = "";
+	for (let node of textNodes) {
+		let value = node.nodeValue;
+		if (!state && !/<<[+-]|[+-]>>/.test(value)) continue;
+		let fragment = snapshotDoc.createDocumentFragment();
+		for (let token of value.split(/(<<\+|\+>>|<<-|->>)/)) {
+			if (token === "<<+") state = "insertion";
+			else if (token === "<<-") state = "deletion";
+			else if (token === "+>>" || token === "->>") state = "";
+			else if (token) {
+				if (!state) fragment.appendChild(snapshotDoc.createTextNode(token));
+				else {
+					let wrapped = snapshotDoc.createElement(state === "insertion" ? "strong" : "s");
+					wrapped.textContent = token;
+					fragment.appendChild(wrapped);
+				}
+			}
+		}
+		node.parentNode.replaceChild(fragment, node);
+	}
 }
 
 function wlAppendSnapshotHead(snapshotDoc, item, url, metadata) {
@@ -704,13 +873,6 @@ function wlAppendSnapshotHeader(snapshotDoc, wrapper, item, sourceDoc, url, meta
 		header.appendChild(citation);
 	}
 
-	for (let line of wlSnapshotHeaderMetadataLines(sourceDoc)) {
-		let metadataLine = snapshotDoc.createElement("p");
-		metadataLine.className = "metadata";
-		metadataLine.textContent = line;
-		header.appendChild(metadataLine);
-	}
-
 	let sourceURL = item.url || westlawURL(sourceDoc, url, metadata);
 	if (sourceURL) {
 		let source = snapshotDoc.createElement("p");
@@ -723,28 +885,6 @@ function wlAppendSnapshotHeader(snapshotDoc, wrapper, item, sourceDoc, url, meta
 		header.appendChild(source);
 	}
 	wrapper.appendChild(header);
-}
-
-// The Westlaw prelim block (publication line, chapter/topic breadcrumb
-// headings) duplicates header information when left in the body, so it is
-// folded into the snapshot header as metadata lines and skipped from the body
-// walk (wlIsSnapshotPrelimNode)
-function wlSnapshotHeaderMetadataLines(sourceDoc) {
-	let block = sourceDoc && sourceDoc.querySelector ? sourceDoc.querySelector(".co_contentBlock.co_propBlock") : null;
-	if (!block) return [];
-	let lines = [];
-	let publicationLine = block.querySelector(".co_publicationLine");
-	if (wlText(publicationLine)) {
-		lines.push(wlText(publicationLine));
-	}
-	let breadcrumbs = Array.from(block.children)
-		.filter(child => child !== publicationLine)
-		.map(wlText)
-		.filter(Boolean);
-	if (breadcrumbs.length) {
-		lines.push(breadcrumbs.join(" › "));
-	}
-	return lines;
 }
 
 function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
@@ -924,15 +1064,44 @@ function wlShouldSkipSnapshotNode(node) {
 		|| /\b(?:co_search|search|sidebar|navigation|toolbar|toc|result|filter)\b/i.test(cls + " " + id);
 }
 
-// Prelim/nav content whose information already lives in the snapshot header:
-// the citation line, the publication/breadcrumb block (folded into header
-// metadata lines), the duplicated document title, the "Currentness" jump
-// link, and internal-anchor jump lists ("Comment: | Reporter's Note | Case
-// Citations")
+// Prelim/nav/boilerplate content that carries no document text: the citation
+// line, the publication/breadcrumb block, the duplicated document title, the
+// "Currentness" jump link, jump-link bars ("Topic Summary | Correlation Table
+// | References"), the statute-head breadcrumb box, research-reference blocks
+// (West's Key Number Digest, correlation tables), copyright lines, the
+// end-of-document marker, and internal-anchor jump lists ("Comment: |
+// Reporter's Note | Case Citations")
 function wlIsSnapshotPrelimNode(node) {
 	let cls = node.className || "";
-	if (/\b(?:co_cites|co_propBlock|co_divider|co_title|co_currentness)\b/.test(cls)) return true;
+	if (/\b(?:co_cites|co_propBlock|co_divider|co_title|co_currentness|co_navLinks|co_genericBox|co_copyright)\b/.test(cls)) return true;
+	if (node.id === "co_endOfDocument") return true;
+	if (wlIsEmptyResearchReferenceBlock(node)) return true;
 	return wlIsInternalAnchorList(node);
+}
+
+// Research-reference digests (West's Key Number Digest, correlation tables)
+// are usually co_excludeAnnotations link lists that the sanitizer drops
+// anyway; skip the block when nothing but its headings would survive, so no
+// orphan heading dangles in the snapshot. Blocks with renderable content
+// (e.g. Cases: annotations in cumulative supplements) are kept whole.
+function wlIsEmptyResearchReferenceBlock(node) {
+	if (!/\bco_researchReference(?:s|Block)\b/.test(node.className || "")) return false;
+	return !wlHasRenderableResearchContent(node);
+}
+
+function wlHasRenderableResearchContent(node) {
+	for (let child of node.childNodes) {
+		if (child.nodeType === Node.TEXT_NODE) {
+			if (wlClean(child.nodeValue)) return true;
+			continue;
+		}
+		if (child.nodeType !== Node.ELEMENT_NODE) continue;
+		if (wlSkipElement(child)) continue;
+		if (child.classList && child.classList.contains("co_headtext")) continue;
+		if (/^H[1-6]$/.test(child.tagName)) continue;
+		if (wlHasRenderableResearchContent(child)) return true;
+	}
+	return false;
 }
 
 function wlIsInternalAnchorList(node) {
@@ -1317,6 +1486,13 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	}
 	else if (tag === "BLOCKQUOTE") {
 		cleanNode = doc.createElement("blockquote");
+	}
+	// Bill text renders deletions struck through and insertions emphasized
+	else if (tag === "S" || tag === "STRIKE" || tag === "DEL") {
+		cleanNode = doc.createElement("s");
+	}
+	else if (tag === "INS") {
+		cleanNode = doc.createElement("strong");
 	}
 	else if (tag === "UL" || tag === "OL" || tag === "LI") {
 		// Westlaw renders co_list lists without bullet glyphs; emitting real
@@ -2199,13 +2375,21 @@ function wlLooksLikePersonalCreator(name) {
 	return /^[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+|\s+[A-Z]\.){1,4}$/.test(name);
 }
 
+// Westlaw bylines append degrees ("James L. Buchwalter, J.D.") that are not
+// part of the name
+var creatorDegreePattern = /(?:,?\s+(?:J\.?D\.?|Ph\.?D\.?|LL\.?M\.?|LL\.?B\.?|M\.?B\.?A\.?|Esq\.?))+\s*$/i;
+
+function wlCleanCreatorName(name) {
+	return wlClean(name).replace(creatorDegreePattern, "").replace(/[,;]\s*$/, "");
+}
+
+// Creators are stored as single-field names: splitting legal bylines into
+// first/last parts guesses wrong too often (degrees, firm names, "Jr.", ...)
 function wlAddCreator(item, name) {
-	name = wlClean(name);
+	name = wlCleanCreatorName(name);
 	if (!name) return;
-	let parts = name.split(/\s+/);
-	let lastName = parts.pop();
 	item.creators = item.creators || [];
-	item.creators.push({ firstName: parts.join(" "), lastName: lastName, creatorType: "author" });
+	item.creators.push({ lastName: name, fieldMode: 1, creatorType: "author" });
 }
 
 function wlArticlePages(cite) {
@@ -2304,21 +2488,24 @@ function wlIsUnpublished(doc) {
 	return caveat.includes("unpublished");
 }
 
+// Only the document's own KeyCite flag counts, and only a red flag. Westlaw
+// renders the document-level flag inside #co_docHeaderCitatorFlag and
+// #co_readingModeCitatorFlag; flags elsewhere (.co_inlineKeyCiteFlag, the
+// flag legend) describe cited cases, not this one. Yellow flags
+// ("distinguished by", ...) are deliberately not treated as negative history.
 function wlHasNegativeHistory(doc) {
-	let flagNodes = doc.querySelectorAll(".co_inlineKeyCiteFlag, .co_keyIcon, [alt], [title], [aria-label]");
-	return Array.from(flagNodes).some((node) => {
-		let text = [
-			node.className,
-			node.getAttribute("alt"),
-			node.getAttribute("title"),
-			node.getAttribute("aria-label"),
-			node.getAttribute("src"),
-			wlText(node)
-		].filter(Boolean).join(" ").toLowerCase();
-		return /\bred\s*flag\b/.test(text)
-			|| /\bnegative (history|treatment)\b/.test(text)
-			|| /\bsevere negative\b/.test(text);
-	});
+	let flagNodes = doc.querySelectorAll("#co_docHeaderCitatorFlag .co_citatorFlag, #co_readingModeCitatorFlag .co_citatorFlag");
+	return Array.from(flagNodes).some(wlIsRedFlag);
+}
+
+// Red flag classes: co_rFlagLg/Sm (red), co_rStripedFlagLg/Sm (overruled in
+// part). The image alt/src check is a fallback in case the classes change.
+function wlIsRedFlag(node) {
+	if (/\bco_r(?:Striped)?Flag(?:Sm|Md|Lg)?\b/.test(node.className || "")) return true;
+	let img = node.querySelector("img");
+	if (!img) return false;
+	let text = ((img.getAttribute("alt") || "") + " " + (img.getAttribute("src") || "")).toLowerCase();
+	return /\bkeycite red flag\b/.test(text) || /\bflag_red\b/.test(text);
 }
 
 function wlOpinionLabel(opinionData, index) {
