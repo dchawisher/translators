@@ -22,8 +22,12 @@ function isBuildValid() {
 	const configPath = path.join(CONNECTOR_BUILD_DIR, 'zotero_config.js');
 	if (!existsSync(configPath)) return false;
 	const config = readFileSync(configPath, 'utf-8');
+	// ALWAYS_FETCH_FROM_REPOSITORY is baked as true by the build, then flipped to
+	// false by scripts/patch-westlaw-snapshot-connector.mjs in the main repo so the
+	// dev connector prefers translators from the running Citate. Either value means
+	// the build was made with our config.
 	return config.includes(`REPOSITORY_URL: "${TRANSLATOR_SERVER_URL}"`)
-		&& config.includes('ALWAYS_FETCH_FROM_REPOSITORY: true');
+		&& /ALWAYS_FETCH_FROM_REPOSITORY: (true|false)/.test(config);
 }
 
 /**

@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-07-05 19:30:00"
+	"lastUpdated": "2026-07-28 17:48:03"
 }
 
 
@@ -893,6 +893,7 @@ function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 		: item.callNumber || "";
 	let opinions = wlCaseOpinions(doc);
 	let annotationIndex = { value: 0 };
+	wlAppendCaseBackgroundSnapshot(doc, snapshotDoc, wrapper, selectedCitation, annotationIndex);
 	for (let i = 0; i < opinions.length; i++) {
 		let opinionData = opinions[i];
 		let section = snapshotDoc.createElement("section");
@@ -926,6 +927,29 @@ function wlAppendCaseSnapshot(doc, snapshotDoc, wrapper, item) {
 		});
 		if (wlClean(section.textContent)) wrapper.appendChild(section);
 	}
+}
+
+function wlAppendCaseBackgroundSnapshot(doc, snapshotDoc, wrapper, selectedCitation, annotationIndex) {
+	let backgroundBlocks = wlCaseBackgroundBlocks(doc);
+	if (!backgroundBlocks.length) return;
+
+	let section = snapshotDoc.createElement("section");
+	section.className = "subdocument background";
+	let heading = snapshotDoc.createElement("h2");
+	heading.textContent = "Background";
+	section.appendChild(heading);
+	let headingChildCount = section.childNodes.length;
+	let includedParagraphs = [];
+	let includedFootnotes = [];
+	for (let block of backgroundBlocks) {
+		wlAppendSnapshotContent(doc, snapshotDoc, block, section, {
+			pageIndex: wlPageMarkerIndex(doc, block, selectedCitation),
+			includedParagraphs,
+			includedFootnotes,
+			annotationIndex
+		});
+	}
+	if (section.childNodes.length > headingChildCount) wrapper.appendChild(section);
 }
 
 function wlAppendGenericSnapshot(doc, snapshotDoc, wrapper, root, item, metadata) {
@@ -1415,6 +1439,17 @@ function wlCaseOpinions(doc) {
 	return opinions;
 }
 
+function wlCaseBackgroundBlocks(doc) {
+	let root = wlGetDocumentRoot(doc);
+	if (!root) return [];
+	let backgroundBlocks = [];
+	for (let block of Array.from(root.querySelectorAll(".co_remarksBlock, .co_opinionBlock"))) {
+		if (block.classList.contains("co_opinionBlock")) break;
+		backgroundBlocks.push(block);
+	}
+	return backgroundBlocks;
+}
+
 // Kind from the body's immediate container, whose classes look like
 // "co_contentBlock x_opinion<Kind> [TocShowConcurDissent]". Westlaw's spelling
 // varies (x_opinionConcurrence vs. x_opinionConcurrance), so match "concur",
@@ -1442,6 +1477,14 @@ function wlSanitizeNode(node, doc, pageIndex, options) {
 	if (!node) return [];
 	if (node.nodeType === Node.TEXT_NODE) return [doc.createTextNode(node.nodeValue)];
 	if (node.nodeType !== Node.ELEMENT_NODE) return [];
+	// Westlaw splits one highlight into multiple co_hl spans when it crosses
+	// inline markup such as a linked citation. Rejoin those fragments before
+	// assigning Citate annotation IDs so one Westlaw annotation stays one
+	// snapshot annotation after links and other delivery markup are removed.
+	if (options.snapshot && !options.annotationFragmentsNormalized) {
+		options = Object.assign({}, options, { annotationFragmentsNormalized: true });
+		node = wlNormalizeSnapshotAnnotationFragments(node);
+	}
 	if (wlSkipElement(node)) return [];
 
 	let tag = node.tagName;
@@ -1963,6 +2006,79 @@ function wlNormalizeFootnoteNumber(number) {
 	return match ? match[0] : "";
 }
 
+function wlNormalizeSnapshotAnnotationFragments(root) {
+	let seen = new Set();
+	let hasFragments = Array.from(root.querySelectorAll(".co_hl:not(.co_hlActivator)"))
+		.some(node => {
+			let key = wlSourceAnnotationKey(node);
+			if (!key) return false;
+			if (seen.has(key)) return true;
+			seen.add(key);
+			return false;
+		});
+	if (!hasFragments) return root;
+
+	let clone = root.cloneNode(true);
+	let groups = new Map();
+	for (let node of Array.from(clone.querySelectorAll(".co_hl:not(.co_hlActivator)"))) {
+		let key = wlSourceAnnotationKey(node);
+		if (!key) continue;
+		if (!groups.has(key)) groups.set(key, []);
+		groups.get(key).push(node);
+	}
+
+	let changed = false;
+	for (let [key, nodes] of groups) {
+		if (nodes.length < 2) continue;
+		let block = wlSourceAnnotationBlock(nodes[0], clone);
+		if (!block || !nodes.every(node => wlSourceAnnotationBlock(node, clone) === block)) continue;
+
+		let annotationText = wlClean(nodes
+			.filter(node => !node.closest(".co_starPage"))
+			.map(node => node.textContent)
+			.join(""));
+		let first = nodes[0];
+		let last = nodes[nodes.length - 1];
+		let insertionPoint = clone.ownerDocument.createComment("");
+		first.parentNode.insertBefore(insertionPoint, first);
+		let range = clone.ownerDocument.createRange();
+		range.setStartBefore(first);
+		range.setEndAfter(last);
+		let contents = range.extractContents();
+
+		for (let fragment of Array.from(contents.querySelectorAll(".co_hl:not(.co_hlActivator)"))) {
+			if (wlSourceAnnotationKey(fragment) !== key) continue;
+			let parent = fragment.parentNode;
+			while (fragment.firstChild) parent.insertBefore(fragment.firstChild, fragment);
+			parent.removeChild(fragment);
+		}
+
+		let wrapper = clone.ownerDocument.createElement("span");
+		wrapper.className = first.className;
+		let sourceID = first.getAttribute("data-annotationid");
+		if (sourceID) wrapper.setAttribute("data-annotationid", sourceID);
+		if (annotationText) wrapper.setAttribute("data-citate-annotation-text", annotationText);
+		wrapper.appendChild(contents);
+		insertionPoint.parentNode.insertBefore(wrapper, insertionPoint.nextSibling);
+		insertionPoint.parentNode.removeChild(insertionPoint);
+		changed = true;
+	}
+	return changed ? clone : root;
+}
+
+function wlSourceAnnotationKey(node) {
+	let sourceID = node.getAttribute("data-annotationid");
+	if (sourceID) return "id:" + sourceID;
+	let selectionClass = (node.className || "").match(/\bco_selection_[^\s]+\b/);
+	return selectionClass ? "class:" + selectionClass[0] : "";
+}
+
+function wlSourceAnnotationBlock(node, root) {
+	let block = node.closest(".co_paragraphText, .co_headtext, p, li, blockquote");
+	if (block && (block === root || root.contains(block))) return block;
+	return root.classList && root.classList.contains("co_footnoteBody") ? root : null;
+}
+
 function wlSnapshotAnnotationID(options) {
 	if (!options.annotationIndex) options.annotationIndex = { value: 0 };
 	options.annotationIndex.value++;
@@ -1972,7 +2088,7 @@ function wlSnapshotAnnotationID(options) {
 function wlSnapshotAnnotationData(node, annotationID, color, index) {
 	let annotation = {
 		type: "highlight",
-		text: wlClean(node.textContent),
+		text: node.getAttribute("data-citate-annotation-text") || wlClean(node.textContent),
 		color: wlZoteroAnnotationColor(color),
 		isExternal: false,
 		sortIndex: String(index).padStart(7, "0"),
